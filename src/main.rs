@@ -1,4 +1,5 @@
 use paprun::ast::VarKind;
+use paprun::batch::{self, CsvOptions};
 use paprun::{Error, Pap, format_value};
 use std::process::ExitCode;
 
@@ -7,13 +8,26 @@ paprun — wertet die XML-Programmablaufpläne des BMF aus
 
 Aufruf:
   paprun <PAP.xml> [--in NAME=WERT]... [--json] [--vars]
+  paprun <PAP.xml> --csv [--delimiter Z] [--passthrough]   < ein.csv > aus.csv
 
-Optionen:
+Einzelfall:
   --in NAME=WERT   Eingabevariable setzen (wiederholbar).
                    Geldbeträge in Cent, z. B. --in RE4=5000000 für 50.000,00 EUR
-  --vars           Ein- und Ausgabevariablen mit Typ und Default auflisten
   --all            alle Variablen ausgeben, auch interne Zwischenergebnisse
   --json           Ausgaben als flaches JSON-Objekt
+
+Stapelverarbeitung:
+  --csv            CSV von der Standardeingabe lesen, Ergebnisse als CSV auf
+                   die Standardausgabe schreiben. Die Kopfzeile benennt die
+                   Eingabevariablen, jede Datenzeile ist ein Fall. Fehlende
+                   oder leere Felder verwenden den Default der Variablen.
+  --delimiter Z    Trennzeichen (Standard `,`; deutsche Exporte oft `;`)
+  --passthrough    Spalten, die keine Eingabevariablen sind (etwa
+                   Personalnummern), unverändert in die Ausgabe übernehmen
+  --template       CSV-Kopfzeile mit allen Eingabevariablen ausgeben
+
+Allgemein:
+  --vars           Ein- und Ausgabevariablen mit Typ und Default auflisten
   -h, --help       diese Hilfe";
 
 fn main() -> ExitCode {
@@ -57,6 +71,9 @@ fn run(args: &[String]) -> Result<(), CliError> {
     let mut json = false;
     let mut list_vars = false;
     let mut all = false;
+    let mut csv_mode = false;
+    let mut template = false;
+    let mut csv_options = CsvOptions::default();
 
     let mut i = 0;
     while i < args.len() {
@@ -64,6 +81,19 @@ fn run(args: &[String]) -> Result<(), CliError> {
             "--json" => json = true,
             "--vars" => list_vars = true,
             "--all" => all = true,
+            "--csv" => csv_mode = true,
+            "--template" => template = true,
+            "--passthrough" => csv_options.passthrough = true,
+            "--delimiter" => {
+                i += 1;
+                let value = args
+                    .get(i)
+                    .ok_or_else(|| CliError::Usage("--delimiter erwartet ein Zeichen".into()))?;
+                csv_options.delimiter = single_byte(value)?;
+            }
+            other if other.starts_with("--delimiter=") => {
+                csv_options.delimiter = single_byte(&other["--delimiter=".len()..])?;
+            }
             "--in" => {
                 i += 1;
                 let value = args
@@ -94,6 +124,25 @@ fn run(args: &[String]) -> Result<(), CliError> {
         return Ok(());
     }
 
+    if template {
+        print!("{}", batch::csv_template(&pap, csv_options.delimiter));
+        return Ok(());
+    }
+
+    if csv_mode {
+        // Streamend: Es wird immer nur eine Zeile im Speicher gehalten.
+        let stdin = std::io::stdin();
+        let stdout = std::io::stdout();
+        let rows = batch::run_csv(
+            &pap,
+            stdin.lock(),
+            std::io::BufWriter::new(stdout.lock()),
+            &csv_options,
+        )?;
+        eprintln!("{rows} Zeilen verarbeitet");
+        return Ok(());
+    }
+
     let mut inputs = pap.new_inputs();
     for assignment in assignments {
         let (name, value) = assignment
@@ -119,6 +168,20 @@ fn run(args: &[String]) -> Result<(), CliError> {
         }
     }
     Ok(())
+}
+
+/// Trennzeichen aus einem Argument lesen; erlaubt sind nur Einzelbyte-Zeichen.
+fn single_byte(text: &str) -> Result<u8, CliError> {
+    let unescaped = match text {
+        "\\t" | "tab" => "\t",
+        other => other,
+    };
+    match unescaped.as_bytes() {
+        [byte] => Ok(*byte),
+        _ => Err(CliError::Usage(format!(
+            "`{text}` ist kein einzelnes Trennzeichen"
+        ))),
+    }
 }
 
 fn print_vars(pap: &Pap) {

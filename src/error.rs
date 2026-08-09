@@ -8,6 +8,8 @@ pub enum Error {
     Load { msg: String, context: String },
     /// Fehler zur Auswertungszeit (z. B. Division durch null, Typfehler).
     Eval { msg: String },
+    /// Fehler bei der Ein-/Ausgabe der Stapelverarbeitung.
+    Io { msg: String },
 }
 
 impl Error {
@@ -21,6 +23,10 @@ impl Error {
     pub fn eval(msg: impl Into<String>) -> Self {
         Error::Eval { msg: msg.into() }
     }
+
+    pub fn io(msg: impl Into<String>) -> Self {
+        Error::Io { msg: msg.into() }
+    }
 }
 
 impl fmt::Display for Error {
@@ -33,6 +39,7 @@ impl fmt::Display for Error {
                 write!(f, "Ladefehler: {msg} (in: `{context}`)")
             }
             Error::Eval { msg } => write!(f, "Auswertungsfehler: {msg}"),
+            Error::Io { msg } => write!(f, "Ein-/Ausgabefehler: {msg}"),
         }
     }
 }

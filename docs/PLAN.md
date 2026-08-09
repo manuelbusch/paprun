@@ -166,6 +166,53 @@ Für Massenläufe ist Parallelisierung der weitaus größere Hebel: `Pap` ist
 `Send + Sync`, ein geladener PAP kann von beliebig vielen Threads geteilt werden
 (4,7× auf 6 Kernen).
 
+## Stapelverarbeitung
+
+`--csv` liest eine CSV-Tabelle von der Standardeingabe und schreibt die
+Ergebnisse als CSV auf die Standardausgabe (`src/batch.rs`). Die Kernfunktion
+`run_csv` arbeitet auf `Read`/`Write` und ist damit ohne Dateisystem testbar;
+die CLI reicht nur Stdin/Stdout hinein.
+
+Entwurfsentscheidungen:
+
+- **Streamend statt sammelnd** — immer nur eine Zeile im Speicher, konstanter
+  Bedarf auch bei Millionen Zeilen. Ein zunächst angedachter Modus mit je einer
+  JSON-Datei pro Fall wurde verworfen: Er skaliert schlecht (ein Dateisystem-
+  Zugriff pro Fall) und passt nicht in Pipelines.
+- **Spaltenauflösung einmal pro Datei**, nicht pro Zeile — dafür gibt es
+  `InputBuilder::set_by_id` neben dem namensbasierten `set`.
+- **Unbekannte Spalten sind ein Fehler**, außer mit `--passthrough`. Ein
+  stillschweigend ignoriertes `STKl` statt `STKL` würde sonst falsche Ergebnisse
+  liefern, ohne aufzufallen.
+- **Abbruch mit Zeilennummer** statt Überspringen fehlerhafter Zeilen, damit
+  Ein- und Ausgabe immer 1:1 zusammenpassen.
+- Das `csv`-Crate übernimmt Quoting und Trennzeichen — selbstgeschriebenes
+  CSV-Parsing ist eine klassische Fehlerquelle (Anführungszeichen, eingebettete
+  Zeilenumbrüche).
+
+### Durchsatz und die Frage nach Apache Arrow
+
+200 000 Zeilen laufen in 4,74 s durch (≈ 42 200 Zeilen/s, 23,7 µs pro Zeile).
+Die reine Berechnung kostet davon 19,4 µs — **CSV-Ein-/Ausgabe macht nur rund
+18 % der Laufzeit aus, die Interpretation 82 %.**
+
+Damit beantwortet sich die Arrow-Frage von selbst: Selbst ein hypothetisch
+kostenloses Einlesen brächte höchstens 22 % — Arrow kann an den 82 % Rechenzeit
+nichts ändern. Dem stünde ein erheblicher Zuwachs an Abhängigkeiten gegenüber
+(`arrow-rs` zieht Dutzende Crates nach; das Projekt hat derzeit fünf).
+
+Arrow lohnt sich hier erst, wenn ein **Integrations**bedarf besteht, nicht aus
+Geschwindigkeitsgründen: wenn die Fälle ohnehin als Parquet oder Arrow-IPC aus
+einer Datenpipeline (Polars, DuckDB, Spark) kommen und das Hin- und
+Herkonvertieren über CSV entfällt. Dann wäre ein optionales Cargo-Feature der
+richtige Weg, damit die schlanke Standardvariante erhalten bleibt.
+
+Der weitaus größere Hebel für Massenläufe ist **Parallelisierung**: `Pap` ist
+`Send + Sync`, und die Berechnung dominiert die Laufzeit — auf sechs Kernen
+wären etwa 200 000 Zeilen/s erreichbar. Das erfordert blockweises Lesen und
+Zusammenführen unter Erhalt der Zeilenreihenfolge und ist bewusst noch nicht
+umgesetzt.
+
 ## Nächste sinnvolle Schritte
 
 - Ältere Jahrgänge (2024 und früher) laden und den Parser bei Bedarf erweitern.

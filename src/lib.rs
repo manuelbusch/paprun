@@ -14,6 +14,7 @@
 //! ```
 
 pub mod ast;
+pub mod batch;
 pub mod error;
 pub mod eval;
 pub mod lex;
@@ -91,6 +92,23 @@ impl InputBuilder<'_> {
             )));
         }
         let value = parse_input_value(text, decl.ty, name)?;
+        self.inputs.values.retain(|(existing, _)| *existing != id);
+        self.inputs.values.push((id, value));
+        Ok(self)
+    }
+
+    /// Wie [`InputBuilder::set`], aber über eine bereits aufgelöste `VarId`.
+    /// Für Stapelverarbeitung, wo die Spalten einmal pro Datei aufgelöst
+    /// werden statt einmal pro Zeile.
+    pub fn set_by_id(&mut self, id: VarId, text: &str) -> Result<&mut Self, Error> {
+        let decl = self.pap.var(id);
+        if decl.kind != VarKind::Input {
+            return Err(Error::eval(format!(
+                "`{}` ist keine Eingabevariable, sondern {:?}",
+                decl.name, decl.kind
+            )));
+        }
+        let value = parse_input_value(text, decl.ty, &decl.name)?;
         self.inputs.values.retain(|(existing, _)| *existing != id);
         self.inputs.values.push((id, value));
         Ok(self)

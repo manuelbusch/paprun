@@ -46,6 +46,37 @@ Ausgegeben wird eine `NAME=WERT`-Zeile pro Ausgabevariable (u. a. `LSTLZZ` =
 Lohnsteuer für den Lohnzahlungszeitraum in Cent) — hier `LSTLZZ=692700`, also
 6 927,00 € Jahreslohnsteuer.
 
+## Stapelverarbeitung (CSV über Standardein-/ausgabe)
+
+Für viele Fälle liest `--csv` eine CSV-Tabelle von der Standardeingabe und
+schreibt die Ergebnisse als CSV auf die Standardausgabe. Die Kopfzeile benennt
+die Eingabevariablen, jede Datenzeile ist ein Berechnungsfall:
+
+```
+paprun tests/data/Lohnsteuer2025.xml --csv --passthrough < faelle.csv > ergebnisse.csv
+```
+
+```csv
+Personalnummer,LZZ,STKL,RE4,KVZ,PVZ      →   Personalnummer,BK,BKS,LSTLZZ,SOLZLZZ,…
+4711,1,1,5000000,2.5,1                       4711,0,0,692700,0,…
+4712,1,3,5000000,2.5,1                       4712,0,0,297000,0,…
+```
+
+- Die Verarbeitung ist **streamend**: Es wird immer nur eine Zeile im Speicher
+  gehalten, der Bedarf bleibt also auch bei Millionen Zeilen konstant.
+- **Nicht aufgeführte oder leere Felder** verwenden den Default der Variablen.
+- `--passthrough` übernimmt Spalten, die keine Eingabevariablen sind (etwa
+  Personalnummern), unverändert in die Ausgabe. Ohne das Flag sind sie ein
+  Fehler — das fängt Tippfehler in Spaltennamen ab, die sonst still ignoriert
+  würden.
+- `--delimiter ';'` für Exporte aus deutschen Excel-Versionen.
+- `--template` gibt eine Kopfzeile mit allen Eingabevariablen als Vorlage aus.
+- Bei einem Fehler bricht die Verarbeitung mit der Zeilennummer ab, sodass
+  Ein- und Ausgabe immer Zeile für Zeile zusammenpassen.
+
+Durchsatz: rund **42 000 Zeilen/s** (200 000 Zeilen in 4,7 s), davon etwa 82 %
+Rechenzeit und 18 % CSV-Verarbeitung.
+
 ## Laufzeit
 
 Eine Berechnung dauert rund 19 µs (≈ 51 000/s auf einem Kern), das Laden eines PAP
