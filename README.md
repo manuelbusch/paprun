@@ -46,6 +46,18 @@ Ausgegeben wird eine `NAME=WERT`-Zeile pro Ausgabevariable (u. a. `LSTLZZ` =
 Lohnsteuer für den Lohnzahlungszeitraum in Cent) — hier `LSTLZZ=692700`, also
 6 927,00 € Jahreslohnsteuer.
 
+## Laufzeit
+
+Eine Berechnung dauert rund 19 µs (≈ 51 000/s auf einem Kern), das Laden eines PAP
+etwa 1,4 ms. Ein geladener `Pap` ist `Send + Sync` und kann von mehreren Threads
+geteilt werden — auf sechs Kernen sind es ~243 000 Berechnungen/s. Für Massenläufe
+lohnt es sich also, den PAP einmal zu laden und die Fälle zu parallelisieren.
+
+```
+cargo run --release --example bench    # Gesamtdurchsatz
+cargo run --release --example micro    # einzelne Rechenbausteine
+```
+
 ## Stand
 
 Die Jahrgänge 2025 und 2026 laden vollständig und rechnen. Getestet ist der

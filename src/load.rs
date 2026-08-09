@@ -1,6 +1,6 @@
 //! Laden eines PAP aus dem XML-Pseudocode des BMF.
 
-use crate::ast::{MethodDef, Pap, Stmt, Ty, VarDecl, VarId, VarKind};
+use crate::ast::{Expr, MethodDef, Pap, Stmt, Ty, VarDecl, VarId, VarKind};
 use crate::error::Error;
 use crate::eval::const_eval;
 use crate::parse::{NoScope, parse_array, parse_assign, parse_expr};
@@ -165,6 +165,63 @@ fn zero_of(ty: Ty) -> Value {
     }
 }
 
+/// Enthält der Teilbaum einen Variablenzugriff? Nur variablenfreie Teilbäume
+/// dürfen zur Ladezeit ausgewertet werden.
+fn depends_on_variables(expr: &Expr) -> bool {
+    match expr {
+        Expr::Var(_) | Expr::Index { .. } => true,
+        Expr::IntLit(_) | Expr::DecLit(_) | Expr::DblLit(_) | Expr::RoundLit(_) => false,
+        Expr::ValueOf(inner) | Expr::NewBigDecimal(inner) | Expr::Neg(inner) | Expr::Not(inner) => {
+            depends_on_variables(inner)
+        }
+        Expr::Bin { lhs, rhs, .. } => depends_on_variables(lhs) || depends_on_variables(rhs),
+        Expr::Call { recv, args, .. } => {
+            depends_on_variables(recv) || args.iter().any(depends_on_variables)
+        }
+    }
+}
+
+/// Wertet konstante Teilausdrücke schon beim Laden aus. Der PAP enthält viele
+/// Literale in der Form `BigDecimal.valueOf(17444)`; ohne diese Faltung würden
+/// sie bei jedem Lauf neu aufgebaut.
+fn fold_constants(expr: Expr) -> Expr {
+    // Erst die Kinder falten, dann den Knoten selbst.
+    let expr = match expr {
+        Expr::ValueOf(inner) => Expr::ValueOf(Box::new(fold_constants(*inner))),
+        Expr::NewBigDecimal(inner) => Expr::NewBigDecimal(Box::new(fold_constants(*inner))),
+        Expr::Neg(inner) => Expr::Neg(Box::new(fold_constants(*inner))),
+        Expr::Not(inner) => Expr::Not(Box::new(fold_constants(*inner))),
+        Expr::Bin { op, lhs, rhs } => Expr::Bin {
+            op,
+            lhs: Box::new(fold_constants(*lhs)),
+            rhs: Box::new(fold_constants(*rhs)),
+        },
+        Expr::Call { recv, method, args } => Expr::Call {
+            recv: Box::new(fold_constants(*recv)),
+            method,
+            args: args.into_iter().map(fold_constants).collect(),
+        },
+        Expr::Index { arr, idx } => Expr::Index {
+            arr: Box::new(fold_constants(*arr)),
+            idx: Box::new(fold_constants(*idx)),
+        },
+        literal => return literal,
+    };
+
+    if depends_on_variables(&expr) {
+        return expr;
+    }
+    // Schlägt die Auswertung fehl (etwa Division durch null in einem nie
+    // erreichten Zweig), bleibt der Ausdruck stehen und scheitert erst zur
+    // Laufzeit — genau wie ohne Faltung.
+    match const_eval(&expr) {
+        Ok(Value::Int(i)) => Expr::IntLit(i),
+        Ok(Value::Dec(d)) => Expr::DecLit(d),
+        Ok(Value::Dbl(f)) => Expr::DblLit(f),
+        _ => expr,
+    }
+}
+
 fn read_block(
     parent: Node,
     scope: &HashMap<String, VarId>,
@@ -178,7 +235,10 @@ fn read_block(
                     .attribute("exec")
                     .ok_or_else(|| Error::load("EVAL ohne `exec`", ""))?;
                 let (target, expr) = parse_assign(exec, scope)?;
-                out.push(Stmt::Eval { target, expr });
+                out.push(Stmt::Eval {
+                    target,
+                    expr: fold_constants(expr),
+                });
             }
             "EXECUTE" => {
                 let name = node
@@ -194,7 +254,7 @@ fn read_block(
                 let expr_src = node
                     .attribute("expr")
                     .ok_or_else(|| Error::load("IF ohne `expr`", ""))?;
-                let cond = parse_expr(expr_src, scope)?;
+                let cond = fold_constants(parse_expr(expr_src, scope)?);
                 let branch = |tag: &str| -> Result<Vec<Stmt>, Error> {
                     match node.children().find(|n| n.has_tag_name(tag)) {
                         Some(n) => read_block(n, scope, method_ids),

@@ -111,6 +111,61 @@ manueller Abgleich einzelner Fälle mit dem BMF-Online-Rechner bleibt als zusät
 Bestätigung sinnvoll — insbesondere für Konstellationen, die die Tarifreferenz nicht
 abdeckt (Versorgungsbezüge, sonstige Bezüge, private Krankenversicherung).
 
+## Laufzeit
+
+Messung mit `cargo run --release --example bench` (Lohnsteuer2025, Jahreslauf,
+Steuerklasse 1). `examples/micro.rs` misst die einzelnen Bausteine.
+
+| | vorher | nachher |
+|---|---|---|
+| Laden eines PAP | ~1,4 ms | ~1,4 ms |
+| Eine Berechnung | 25,7 µs | **19,4 µs** |
+| Durchsatz (1 Kern) | 39.000/s | **51.400/s** |
+| Durchsatz (6 Threads) | — | **242.700/s** |
+| Allokationen pro Lauf | 106 | **66** |
+
+Ein Lauf führt rund 124 Anweisungen, 1.138 Ausdrucksknoten und 80
+BigDecimal-Methodenaufrufe aus.
+
+### Was gemessen wurde
+
+`perf` ist auf dem Entwicklungsrechner gesperrt, daher wurde über Mikro-Benchmarks
+der Bausteine, einen zählenden `GlobalAlloc` und temporäre Operationszähler
+eingegrenzt. Ergebnis: Weder Allokationen (~12 % der Zeit) noch die Env-Initialisierung
+(~3 %) dominieren — der Aufwand verteilt sich auf die schiere Zahl ausgewerteter
+Ausdrucksknoten.
+
+### Umgesetzte Optimierungen
+
+1. **`set_scale` ohne Division** — skaliert die Mantisse direkt (Zehnerpotenz statt
+   Division durch 1): 124 → 43 ns. Getestet wurde auch `bigdecimal::with_scale_round`;
+   es ist mit 140 ns langsamer, weil es intern in Dezimalziffern konvertiert.
+2. **`div_scale` ohne Klone** — `as_bigint_and_scale()` (liefert `Cow`) statt
+   `as_bigint_and_exponent()` (klont), `div_rem` statt getrennter Division und
+   Modulo, `magnitude()` statt `abs()` für den allokationsfreien Betragsvergleich,
+   plus ein Cache vorberechneter Zehnerpotenzen: 136 → 55 ns.
+3. **Konstantenfaltung beim Laden** (`fold_constants` in `load.rs`) — der PAP ist
+   voll von Ausdrücken wie `BigDecimal.valueOf(17444)`, die sonst bei jedem Lauf neu
+   aufgebaut würden. Größter Einzelgewinn: 23,2 → 20,2 µs und 40 Allokationen weniger.
+4. **LTO + `codegen-units = 1`** im Release-Profil.
+
+Alle vier sind semantikerhaltend; der Tarif-Vergleich über >2.000 Fälle lief nach
+jedem Schritt unverändert durch.
+
+### Bewusst nicht umgesetzt
+
+- **Eigene Festkomma-Darstellung für kleine Beträge** statt `BigDecimal`. Das wäre
+  der größte verbleibende Hebel, verlagert aber die Rundungs- und Scale-Semantik in
+  selbstgeschriebenen Code — bei einem Steuerberechner ein schlechter Tausch gegen
+  Faktor 2.
+- **Auswertung über Referenzen/`Cow` statt `Value`-Rückgaben**: tiefer Umbau des
+  Interpreters für geschätzt 10–15 %.
+- **Wiederverwendbarer Env-Puffer**: ~3 % für zusätzliche API-Komplexität.
+
+Für Massenläufe ist Parallelisierung der weitaus größere Hebel: `Pap` ist
+`Send + Sync`, ein geladener PAP kann von beliebig vielen Threads geteilt werden
+(4,7× auf 6 Kernen).
+
 ## Nächste sinnvolle Schritte
 
 - Ältere Jahrgänge (2024 und früher) laden und den Parser bei Bedarf erweitern.

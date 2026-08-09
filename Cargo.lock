@@ -61,6 +61,7 @@ version = "0.1.0"
 dependencies = [
  "bigdecimal",
  "num-bigint",
+ "num-integer",
  "num-traits",
  "roxmltree",
 ]

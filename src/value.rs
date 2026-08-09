@@ -7,8 +7,11 @@
 use crate::error::Error;
 use bigdecimal::BigDecimal;
 use num_bigint::BigInt;
+use num_integer::Integer;
 use num_traits::{Signed, ToPrimitive, Zero};
-use std::sync::Arc;
+use std::borrow::Cow;
+use std::cmp::Ordering;
+use std::sync::{Arc, LazyLock};
 
 /// Java-`RoundingMode` bzw. die `BigDecimal.ROUND_*`-Konstanten.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,6 +43,21 @@ impl RoundMode {
     }
 }
 
+impl From<RoundMode> for bigdecimal::RoundingMode {
+    fn from(mode: RoundMode) -> Self {
+        use bigdecimal::RoundingMode as R;
+        match mode {
+            RoundMode::Up => R::Up,
+            RoundMode::Down => R::Down,
+            RoundMode::Ceiling => R::Ceiling,
+            RoundMode::Floor => R::Floor,
+            RoundMode::HalfUp => R::HalfUp,
+            RoundMode::HalfDown => R::HalfDown,
+            RoundMode::HalfEven => R::HalfEven,
+        }
+    }
+}
+
 /// Ein Laufzeitwert des Interpreters.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
@@ -67,39 +85,61 @@ impl Value {
     }
 }
 
-/// `10^exp` als `BigInt` (`exp >= 0`).
-fn pow10(exp: i64) -> BigInt {
-    BigInt::from(10u8).pow(u32::try_from(exp).expect("Zehnerpotenz-Exponent passt nicht in u32"))
+/// Vorberechnete Zehnerpotenzen; deckt jeden im PAP vorkommenden
+/// Scale-Unterschied ab, ohne pro Aufruf zu allozieren.
+static POW10: LazyLock<Vec<BigInt>> = LazyLock::new(|| {
+    let mut out = Vec::with_capacity(41);
+    let mut value = BigInt::from(1);
+    for _ in 0..=40 {
+        out.push(value.clone());
+        value *= 10;
+    }
+    out
+});
+
+/// `10^exp` als Referenz (`exp >= 0`); jenseits des Caches wird gerechnet.
+fn pow10(exp: i64) -> Cow<'static, BigInt> {
+    let exp = usize::try_from(exp).expect("negativer Zehnerpotenz-Exponent");
+    match POW10.get(exp) {
+        Some(value) => Cow::Borrowed(value),
+        None => Cow::Owned(BigInt::from(10u8).pow(u32::try_from(exp).expect("Exponent zu groß"))),
+    }
 }
 
 /// Rundet den Bruch `num / den` (den != 0) auf eine ganze Zahl gemäß `mode`.
 /// Exakte Java-Semantik über den Divisionsrest.
 fn round_quotient(num: &BigInt, den: &BigInt, mode: RoundMode) -> BigInt {
-    let negative = num.is_negative() != den.is_negative();
-    let num_abs = num.abs();
-    let den_abs = den.abs();
-    let q_abs = &num_abs / &den_abs;
-    let r_abs = &num_abs % &den_abs;
+    // `div_rem` trunkiert Richtung null; der Rest trägt das Vorzeichen von `num`.
+    let (quotient, remainder) = num.div_rem(den);
+    if remainder.is_zero() {
+        return quotient;
+    }
 
-    let increment = if r_abs.is_zero() {
-        false
-    } else {
-        let twice_r = &r_abs * 2;
-        match mode {
-            RoundMode::Up => true,
-            RoundMode::Down => false,
-            RoundMode::Ceiling => !negative,
-            RoundMode::Floor => negative,
-            RoundMode::HalfUp => twice_r >= den_abs,
-            RoundMode::HalfDown => twice_r > den_abs,
-            RoundMode::HalfEven => {
-                twice_r > den_abs || (twice_r == den_abs && !(&q_abs % BigInt::from(2)).is_zero())
-            }
+    let negative = num.is_negative() != den.is_negative();
+    // `magnitude()` liefert den Betrag ohne Allokation.
+    let (rem_abs, den_abs) = (remainder.magnitude(), den.magnitude());
+
+    let increment = match mode {
+        RoundMode::Up => true,
+        RoundMode::Down => false,
+        RoundMode::Ceiling => !negative,
+        RoundMode::Floor => negative,
+        // Vergleich von 2·|Rest| mit |Divisor| entscheidet die Halb-Modi.
+        RoundMode::HalfUp => (rem_abs << 1) >= *den_abs,
+        RoundMode::HalfDown => (rem_abs << 1) > *den_abs,
+        RoundMode::HalfEven => {
+            let twice = rem_abs << 1;
+            twice > *den_abs || (twice == *den_abs && quotient.is_odd())
         }
     };
 
-    let q_abs = if increment { q_abs + 1 } else { q_abs };
-    if negative { -q_abs } else { q_abs }
+    if !increment {
+        quotient
+    } else if negative {
+        quotient - 1
+    } else {
+        quotient + 1
+    }
 }
 
 /// Java `a.divide(b, scale, roundingMode)`: Quotient exakt auf `scale`
@@ -113,21 +153,30 @@ pub fn div_scale(
     if b.is_zero() {
         return Err(Error::eval("Division durch null"));
     }
-    let (ai, a_scale) = a.as_bigint_and_exponent();
-    let (bi, b_scale) = b.as_bigint_and_exponent();
+    // `as_bigint_and_scale` liefert Cow, klont die Mantissen also nur bei Bedarf.
+    let (ai, a_scale) = a.as_bigint_and_scale();
+    let (bi, b_scale) = b.as_bigint_and_scale();
     // a/b * 10^scale = ai * 10^(scale + b_scale - a_scale) / bi
     let k = scale + b_scale - a_scale;
-    let (num, den) = if k >= 0 {
-        (ai * pow10(k), bi)
-    } else {
-        (ai, bi * pow10(-k))
+    let quotient = match k {
+        0 => round_quotient(&ai, &bi, mode),
+        k if k > 0 => round_quotient(&(&*ai * &*pow10(k)), &bi, mode),
+        k => round_quotient(&ai, &(&*bi * &*pow10(-k)), mode),
     };
-    Ok(BigDecimal::new(round_quotient(&num, &den, mode), scale))
+    Ok(BigDecimal::new(quotient, scale))
 }
 
-/// Java `a.setScale(scale, roundingMode)`.
+/// Java `a.setScale(scale, roundingMode)`: reines Umskalieren der Mantisse.
+/// Beim Vergrößern des Scale werden Nullen angehängt, beim Verkleinern wird
+/// durch eine Zehnerpotenz geteilt und gerundet.
 pub fn set_scale(a: &BigDecimal, scale: i64, mode: RoundMode) -> Result<BigDecimal, Error> {
-    div_scale(a, &BigDecimal::from(1), scale, mode)
+    let (ai, a_scale) = a.as_bigint_and_scale();
+    let mantissa = match scale.cmp(&a_scale) {
+        Ordering::Equal => ai.into_owned(),
+        Ordering::Greater => &*ai * &*pow10(scale - a_scale),
+        Ordering::Less => round_quotient(&ai, &pow10(a_scale - scale), mode),
+    };
+    Ok(BigDecimal::new(mantissa, scale))
 }
 
 /// Java `a.divide(b)` ohne Scale-Angabe: nur erlaubt, wenn der Quotient
