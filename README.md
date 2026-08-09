@@ -73,9 +73,18 @@ Personalnummer,LZZ,STKL,RE4,KVZ,PVZ      →   Personalnummer,BK,BKS,LSTLZZ,SOLZ
 - `--template` gibt eine Kopfzeile mit allen Eingabevariablen als Vorlage aus.
 - Bei einem Fehler bricht die Verarbeitung mit der Zeilennummer ab, sodass
   Ein- und Ausgabe immer Zeile für Zeile zusammenpassen.
+- Die Berechnung läuft standardmäßig auf **allen Kernen**; `--threads N`
+  begrenzt sie. Die Ausgabe ist dabei byteweise identisch — die
+  Zeilenreihenfolge bleibt immer erhalten.
 
-Durchsatz: rund **42 000 Zeilen/s** (200 000 Zeilen in 4,7 s), davon etwa 82 %
-Rechenzeit und 18 % CSV-Verarbeitung.
+Durchsatz (200 000 Zeilen, 6 Kerne):
+
+| Threads | Zeilen/s | Dauer |
+|---|---|---|
+| 1 | 42 400 | 4,71 s |
+| 2 | 75 100 | 2,66 s |
+| 4 | 131 000 | 1,53 s |
+| 6 | **159 500** | **1,25 s** |
 
 ## Laufzeit
 

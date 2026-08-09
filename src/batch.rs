@@ -20,6 +20,10 @@ pub struct CsvOptions {
     /// übernehmen (z. B. Personalnummern). Ohne dieses Flag sind sie ein
     /// Fehler — das fängt Tippfehler in Spaltennamen ab.
     pub passthrough: bool,
+    /// Anzahl rechnender Threads. `None` nutzt alle verfügbaren Kerne.
+    /// Das Ergebnis ist unabhängig davon immer identisch — die
+    /// Zeilenreihenfolge bleibt erhalten.
+    pub threads: Option<usize>,
 }
 
 impl Default for CsvOptions {
@@ -27,9 +31,18 @@ impl Default for CsvOptions {
         CsvOptions {
             delimiter: b',',
             passthrough: false,
+            threads: None,
         }
     }
 }
+
+/// Zeilen, die je Block gelesen und gemeinsam gerechnet werden. Groß genug,
+/// dass das Starten der Threads (~0,3 ms) nicht ins Gewicht fällt, klein genug
+/// für einen konstanten Speicherbedarf von wenigen Megabyte.
+const CHUNK_ROWS: usize = 4096;
+
+/// Unterhalb dieser Blockgröße lohnt sich das Verteilen nicht.
+const MIN_ROWS_FOR_THREADS: usize = 64;
 
 /// Bedeutung einer Spalte der Eingabedatei.
 enum Column {
@@ -80,47 +93,121 @@ pub fn run_csv(
         .write_record(passthrough_names.iter().chain(&output_names))
         .map_err(|e| Error::io(format!("Kopfzeile nicht schreibbar: {e}")))?;
 
+    let threads = options
+        .threads
+        .unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(1)
+        })
+        .max(1);
+
     let mut record = csv::StringRecord::new();
     let mut row_number = 1u64; // Kopfzeile ist Zeile 1
     let mut rows = 0u64;
-    let mut fields: Vec<String> = Vec::with_capacity(passthrough_names.len() + output_names.len());
+    let mut chunk: Vec<(u64, csv::StringRecord)> = Vec::with_capacity(CHUNK_ROWS);
+    let mut done = false;
 
-    while input
-        .read_record(&mut record)
-        .map_err(|e| Error::io(format!("Zeile {} nicht lesbar: {e}", row_number + 1)))?
-    {
-        row_number += 1;
-
-        let mut inputs = pap.new_inputs();
-        fields.clear();
-        for (value, kind) in record.iter().zip(&columns) {
-            match kind {
-                Column::Passthrough => fields.push(value.to_string()),
-                // Leere Felder bedeuten "Default verwenden".
-                Column::Input(_) if value.trim().is_empty() => {}
-                Column::Input(id) => {
-                    inputs
-                        .set_by_id(*id, value)
-                        .map_err(|e| Error::eval(format!("Zeile {row_number}: {e}")))?;
-                }
+    while !done {
+        // Einen Block einlesen …
+        chunk.clear();
+        while chunk.len() < CHUNK_ROWS {
+            if !input
+                .read_record(&mut record)
+                .map_err(|e| Error::io(format!("Zeile {} nicht lesbar: {e}", row_number + 1)))?
+            {
+                done = true;
+                break;
             }
+            row_number += 1;
+            chunk.push((row_number, record.clone()));
         }
 
-        let results = pap
-            .run(&inputs)
-            .map_err(|e| Error::eval(format!("Zeile {row_number}: {e}")))?;
-        fields.extend(results.into_iter().map(|(_, value)| value));
+        // … rechnen …
+        let results = compute_chunk(pap, &columns, &chunk, threads);
 
-        output
-            .write_record(&fields)
-            .map_err(|e| Error::io(format!("Zeile {row_number} nicht schreibbar: {e}")))?;
-        rows += 1;
+        // … und in Eingabereihenfolge schreiben. Ein Fehler beendet den Lauf
+        // an genau der Stelle, an der auch die sequenzielle Verarbeitung
+        // abbräche: Alle vorherigen Zeilen sind geschrieben.
+        for ((number, _), result) in chunk.iter().zip(results) {
+            let fields = result?;
+            output
+                .write_record(&fields)
+                .map_err(|e| Error::io(format!("Zeile {number} nicht schreibbar: {e}")))?;
+            rows += 1;
+        }
     }
 
     output
         .flush()
         .map_err(|e| Error::io(format!("Ausgabe nicht abschließbar: {e}")))?;
     Ok(rows)
+}
+
+/// Rechnet einen Block von Zeilen und liefert die Ergebnisse in Eingabe-
+/// reihenfolge. Bei mehreren Threads bearbeitet jeder einen zusammenhängenden
+/// Abschnitt, sodass die Reihenfolge ohne Sortieren erhalten bleibt.
+fn compute_chunk(
+    pap: &Pap,
+    columns: &[Column],
+    chunk: &[(u64, csv::StringRecord)],
+    threads: usize,
+) -> Vec<Result<Vec<String>, Error>> {
+    if threads <= 1 || chunk.len() < MIN_ROWS_FOR_THREADS {
+        return chunk
+            .iter()
+            .map(|(number, record)| compute_row(pap, columns, record, *number))
+            .collect();
+    }
+
+    let per_thread = chunk.len().div_ceil(threads);
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = chunk
+            .chunks(per_thread)
+            .map(|slice| {
+                scope.spawn(move || {
+                    slice
+                        .iter()
+                        .map(|(number, record)| compute_row(pap, columns, record, *number))
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|handle| handle.join().expect("Rechen-Thread ist abgestürzt"))
+            .collect()
+    })
+}
+
+/// Wertet eine einzelne Zeile aus: durchgereichte Spalten zuerst, dann die
+/// Ausgabevariablen des PAP.
+fn compute_row(
+    pap: &Pap,
+    columns: &[Column],
+    record: &csv::StringRecord,
+    row_number: u64,
+) -> Result<Vec<String>, Error> {
+    let mut inputs = pap.new_inputs();
+    let mut fields = Vec::new();
+    for (value, kind) in record.iter().zip(columns) {
+        match kind {
+            Column::Passthrough => fields.push(value.to_string()),
+            // Leere Felder bedeuten "Default verwenden".
+            Column::Input(_) if value.trim().is_empty() => {}
+            Column::Input(id) => {
+                inputs
+                    .set_by_id(*id, value)
+                    .map_err(|e| Error::eval(format!("Zeile {row_number}: {e}")))?;
+            }
+        }
+    }
+
+    let results = pap
+        .run(&inputs)
+        .map_err(|e| Error::eval(format!("Zeile {row_number}: {e}")))?;
+    fields.extend(results.into_iter().map(|(_, value)| value));
+    Ok(fields)
 }
 
 /// Ordnet jeder Spalte der Kopfzeile ihre Bedeutung zu.
@@ -282,6 +369,7 @@ mod tests {
         let options = CsvOptions {
             delimiter: b';',
             passthrough: true,
+            ..CsvOptions::default()
         };
         let out = run(
             "Name;LZZ;STKL;RE4;KVZ;PVZ\n\"Muster; GmbH\";1;1;5000000;2.5;1\n",
@@ -304,6 +392,99 @@ mod tests {
         .unwrap();
         assert_eq!(rows, 0);
         assert_eq!(String::from_utf8(out).unwrap().lines().count(), 1);
+    }
+
+    /// Erzeugt `rows` Fälle mit fortlaufender Nummer und wechselnder
+    /// Steuerklasse — genug Zeilen, um die Parallelverarbeitung auszulösen.
+    fn many_rows(rows: u64) -> String {
+        let mut csv = String::from("Nr,LZZ,STKL,RE4,KVZ,PVZ\n");
+        for i in 0..rows {
+            let stkl = i % 6 + 1;
+            let re4 = 1_000_000 + i * 1_000;
+            csv.push_str(&format!("{i},1,{stkl},{re4},2.5,1\n"));
+        }
+        csv
+    }
+
+    fn options_with(threads: usize) -> CsvOptions {
+        CsvOptions {
+            passthrough: true,
+            threads: Some(threads),
+            ..CsvOptions::default()
+        }
+    }
+
+    #[test]
+    fn parallel_result_is_identical_to_sequential() {
+        let csv = many_rows(1000);
+        let sequential = run(&csv, &options_with(1)).unwrap();
+        for threads in [2, 3, 8, 16] {
+            assert_eq!(
+                run(&csv, &options_with(threads)).unwrap(),
+                sequential,
+                "Ergebnis weicht bei {threads} Threads ab"
+            );
+        }
+        // Auch der Standard (alle Kerne) muss dasselbe liefern.
+        let options = CsvOptions {
+            passthrough: true,
+            ..CsvOptions::default()
+        };
+        assert_eq!(run(&csv, &options).unwrap(), sequential);
+    }
+
+    #[test]
+    fn preserves_row_order_across_chunks() {
+        // Mehr als CHUNK_ROWS, damit mehrere Blöcke durchlaufen.
+        let rows = CHUNK_ROWS as u64 + 500;
+        let out = run(&many_rows(rows), &options_with(8)).unwrap();
+        let numbers: Vec<u64> = out
+            .lines()
+            .skip(1)
+            .map(|line| line.split(',').next().unwrap().parse().unwrap())
+            .collect();
+        assert_eq!(numbers.len(), rows as usize);
+        assert!(
+            numbers.iter().enumerate().all(|(i, n)| *n == i as u64),
+            "Zeilenreihenfolge ist nicht erhalten"
+        );
+    }
+
+    #[test]
+    fn parallel_reports_same_error_row_as_sequential() {
+        let mut csv = many_rows(500);
+        // Zeile 300 der Daten (Dateizeile 301) unbrauchbar machen.
+        let mut lines: Vec<&str> = csv.lines().collect();
+        lines[300] = "300,1,keinezahl,1000000,2.5,1";
+        csv = format!("{}\n", lines.join("\n"));
+
+        let sequential = run(&csv, &options_with(1)).unwrap_err().to_string();
+        assert!(sequential.contains("Zeile 301"), "{sequential}");
+        for threads in [2, 8] {
+            let parallel = run(&csv, &options_with(threads)).unwrap_err().to_string();
+            assert_eq!(parallel, sequential, "bei {threads} Threads");
+        }
+    }
+
+    #[test]
+    fn rows_before_an_error_are_written() {
+        let mut lines: Vec<&str> = Vec::new();
+        let csv = many_rows(200);
+        lines.extend(csv.lines());
+        lines[100] = "100,1,keinezahl,1000000,2.5,1";
+        let csv = format!("{}\n", lines.join("\n"));
+
+        let mut out = Vec::new();
+        let error = run_csv(pap(), csv.as_bytes(), &mut out, &options_with(8)).unwrap_err();
+        assert!(error.to_string().contains("Zeile 101"));
+        // Kopfzeile plus die 99 fehlerfreien Zeilen davor.
+        let written = String::from_utf8(out).unwrap();
+        assert_eq!(
+            written.lines().count(),
+            100,
+            "Teilausgabe: {}",
+            written.lines().count()
+        );
     }
 
     #[test]

@@ -24,6 +24,9 @@ Stapelverarbeitung:
   --delimiter Z    Trennzeichen (Standard `,`; deutsche Exporte oft `;`)
   --passthrough    Spalten, die keine Eingabevariablen sind (etwa
                    Personalnummern), unverändert in die Ausgabe übernehmen
+  --threads N      Anzahl rechnender Threads (Standard: alle Kerne). Das
+                   Ergebnis ist davon unabhängig — die Zeilenreihenfolge
+                   bleibt immer erhalten.
   --template       CSV-Kopfzeile mit allen Eingabevariablen ausgeben
 
 Allgemein:
@@ -84,6 +87,16 @@ fn run(args: &[String]) -> Result<(), CliError> {
             "--csv" => csv_mode = true,
             "--template" => template = true,
             "--passthrough" => csv_options.passthrough = true,
+            "--threads" => {
+                i += 1;
+                let value = args
+                    .get(i)
+                    .ok_or_else(|| CliError::Usage("--threads erwartet eine Anzahl".into()))?;
+                csv_options.threads = Some(parse_threads(value)?);
+            }
+            other if other.starts_with("--threads=") => {
+                csv_options.threads = Some(parse_threads(&other["--threads=".len()..])?);
+            }
             "--delimiter" => {
                 i += 1;
                 let value = args
@@ -168,6 +181,16 @@ fn run(args: &[String]) -> Result<(), CliError> {
         }
     }
     Ok(())
+}
+
+/// Threadanzahl aus einem Argument lesen; mindestens 1.
+fn parse_threads(text: &str) -> Result<usize, CliError> {
+    match text.trim().parse::<usize>() {
+        Ok(n) if n >= 1 => Ok(n),
+        _ => Err(CliError::Usage(format!(
+            "`{text}` ist keine gültige Threadanzahl (mindestens 1)"
+        ))),
+    }
 }
 
 /// Trennzeichen aus einem Argument lesen; erlaubt sind nur Einzelbyte-Zeichen.

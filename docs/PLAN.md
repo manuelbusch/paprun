@@ -207,11 +207,39 @@ einer Datenpipeline (Polars, DuckDB, Spark) kommen und das Hin- und
 Herkonvertieren über CSV entfällt. Dann wäre ein optionales Cargo-Feature der
 richtige Weg, damit die schlanke Standardvariante erhalten bleibt.
 
-Der weitaus größere Hebel für Massenläufe ist **Parallelisierung**: `Pap` ist
-`Send + Sync`, und die Berechnung dominiert die Laufzeit — auf sechs Kernen
-wären etwa 200 000 Zeilen/s erreichbar. Das erfordert blockweises Lesen und
-Zusammenführen unter Erhalt der Zeilenreihenfolge und ist bewusst noch nicht
-umgesetzt.
+### Parallelisierung (umgesetzt)
+
+Weil die Berechnung 82 % der Laufzeit ausmacht und `Pap` `Send + Sync` ist, war
+Parallelisierung der größte Hebel. Umgesetzt blockweise mit `std::thread::scope`,
+ohne zusätzliche Abhängigkeit:
+
+- Es werden `CHUNK_ROWS` (4096) Zeilen eingelesen, auf die Threads verteilt und
+  danach **in Eingabereihenfolge** geschrieben. Jeder Thread bekommt einen
+  zusammenhängenden Abschnitt, sodass die Reihenfolge ohne Sortieren erhalten
+  bleibt.
+- Der Speicherbedarf bleibt konstant (ein Block, wenige MB).
+- Unter 64 Zeilen pro Block wird sequenziell gerechnet — darunter überwiegt der
+  Aufwand fürs Starten der Threads.
+- **Fehlerverhalten ist identisch zum sequenziellen Lauf:** Die Zeilen vor der
+  fehlerhaften werden geschrieben, dann bricht der Lauf mit derselben
+  Zeilennummer ab. Tests vergleichen Ausgabe und Fehlermeldung zwischen 1, 2, 3,
+  8 und 16 Threads.
+
+| Threads | Zeilen/s | Dauer für 200 000 Zeilen | Beschleunigung |
+|---|---|---|---|
+| 1 | 42 400 | 4,71 s | 1,0× |
+| 2 | 75 100 | 2,66 s | 1,8× |
+| 4 | 131 000 | 1,53 s | 3,1× |
+| 6 | 159 500 | 1,25 s | **3,8×** |
+
+Die Skalierung flacht ab, weil Lesen und Schreiben im Hauptthread seriell
+bleiben (Amdahl). Bei sechs Kernen entfallen von 6,3 µs pro Zeile nur noch rund
+3,2 µs auf die Berechnung — **der CSV-Durchsatz ist jetzt der Flaschenhals.**
+Damit gewinnt die Arrow-Frage an Gewicht: Ein spaltenbasiertes Eingabeformat
+würde nun an der Hälfte der Wandzeit ansetzen statt an 18 %. Vor Arrow lägen
+allerdings billigere Schritte: das Einlesen in einen eigenen Thread verlagern
+(Lesen, Rechnen und Schreiben überlappen) oder die Ausgabe direkt aus den
+Threads puffern.
 
 ## Nächste sinnvolle Schritte
 
