@@ -5,7 +5,7 @@
 //! Übrige als Funktion mit dem Empfänger als erstem Argument
 //! (`div(a, b, 2, down)`, `scale(a, 0, down)`, `cmp(a, b)`).
 
-use crate::ast::{BdMethod, BinOp, Expr, Pap, Stmt, Ty, VarKind};
+use crate::ast::{BdMethod, BinOp, Expr, Pap, Stmt, VarKind};
 use crate::value::{RoundMode, to_plain_string};
 use crate::{Value, format_value};
 
@@ -290,7 +290,9 @@ pub fn to_yaml(pap: &Pap) -> String {
         }
         out.push_str(&format!("\n{section}:\n"));
         for (_, decl) in vars {
-            let mut fields = format!("type: {}", decl.ty.name());
+            // Der Typ wird zitiert, weil `BigDecimal[]` sonst als
+            // YAML-Sequenz gelesen würde.
+            let mut fields = format!("type: {}", quote(decl.ty.name()));
             if !is_zero(&decl.default) {
                 fields.push_str(&format!(
                     ", default: {}",
@@ -308,21 +310,21 @@ pub fn to_yaml(pap: &Pap) -> String {
     if !constants.is_empty() {
         out.push_str("\nconstants:\n");
         for (_, decl) in constants {
-            match &decl.default {
+            let ty = quote(decl.ty.name());
+            let value = match &decl.default {
                 Value::Arr(items) => {
-                    let inner: Vec<String> = items.iter().map(format_value).collect();
-                    out.push_str(&format!(
-                        "  {}: [{}]\n",
-                        quote_key(&decl.name),
-                        inner.join(", ")
-                    ));
+                    let inner: Vec<String> = items
+                        .iter()
+                        .map(|item| quote(&format_value(item)))
+                        .collect();
+                    format!("[{}]", inner.join(", "))
                 }
-                value => out.push_str(&format!(
-                    "  {}: {}\n",
-                    quote_key(&decl.name),
-                    quote(&format_value(value))
-                )),
-            }
+                value => quote(&format_value(value)),
+            };
+            out.push_str(&format!(
+                "  {}: {{ type: {ty}, value: {value} }}\n",
+                quote_key(&decl.name)
+            ));
         }
     }
 
@@ -445,11 +447,4 @@ fn quote(text: &str) -> String {
     }
     out.push('"');
     out
-}
-
-/// Typname für die Ausgabe.
-impl Ty {
-    pub fn yaml_name(self) -> &'static str {
-        self.name()
-    }
 }

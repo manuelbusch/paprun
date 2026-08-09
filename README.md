@@ -46,12 +46,15 @@ Ausgegeben wird eine `NAME=WERT`-Zeile pro Ausgabevariable (u. a. `LSTLZZ` =
 Lohnsteuer für den Lohnzahlungszeitraum in Cent) — hier `LSTLZZ=692700`, also
 6 927,00 € Jahreslohnsteuer.
 
-## YAML-Ausgabe
+## YAML-Format
 
-`--yaml` gibt den geladenen PAP in einer lesbaren YAML-Fassung aus:
+`--yaml` gibt den geladenen PAP in einer lesbaren YAML-Fassung aus — und diese
+lässt sich unverändert wieder einlesen und rechnen. Das Format wird am Inhalt
+erkannt, ein eigenes Flag ist nicht nötig:
 
 ```
 paprun tests/data/Lohnsteuer2025.xml --yaml > Lohnsteuer2025.yaml
+paprun Lohnsteuer2025.yaml --in LZZ=1 --in STKL=1 --in RE4=5000000
 ```
 
 ```yaml
@@ -79,8 +82,30 @@ gewöhnlicher Diff sichtbar:
 diff <(paprun Lohnsteuer2025.xml --yaml) <(paprun Lohnsteuer2026.xml --yaml)
 ```
 
-Ein Test stellt sicher, dass **jeder** Ausdruck beider Jahrgänge nach dem
-Wiedereinlesen identisch rechnet — auch mit denselben Fehlern.
+Weil das Format vollständig ist, lassen sich damit auch **eigene**
+Berechnungsvorschriften schreiben — etwa für Beiträge, Zulagen oder Steuerjahre,
+für die kein XML mehr verfügbar ist:
+
+```yaml
+name: Beispielabgabe
+inputs:
+  BRUTTO: { type: "BigDecimal" }
+outputs:
+  ABGABE: { type: "BigDecimal" }
+constants:
+  FREIBETRAG: { type: "BigDecimal", value: "1000" }
+  SATZ:       { type: "BigDecimal", value: "0.2" }
+main:
+  - if: "BRUTTO > FREIBETRAG"
+    then:
+      - eval: "ABGABE = scale((BRUTTO - FREIBETRAG) * SATZ, 2, half_up)"
+    else:
+      - eval: "ABGABE = dec(0)"
+```
+
+Zwei Tests sichern das Format ab: Jeder Ausdruck beider Jahrgänge muss nach dem
+Wiedereinlesen identisch rechnen, und über 2 400 vollständige Berechnungen
+müssen aus YAML dieselben Ergebnisse liefern wie aus dem amtlichen XML.
 
 ## Stapelverarbeitung (CSV über Standardein-/ausgabe)
 

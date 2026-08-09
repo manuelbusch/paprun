@@ -4,11 +4,14 @@ use paprun::{Error, Pap, format_value};
 use std::process::ExitCode;
 
 const USAGE: &str = "\
-paprun — wertet die XML-Programmablaufpläne des BMF aus
+paprun — wertet Programmablaufpläne aus (BMF-XML-Pseudocode oder YAML)
 
 Aufruf:
-  paprun <PAP.xml> [--in NAME=WERT]... [--json] [--vars]
-  paprun <PAP.xml> --csv [--delimiter Z] [--passthrough]   < ein.csv > aus.csv
+  paprun <PAP-Datei> [--in NAME=WERT]... [--json] [--vars]
+  paprun <PAP-Datei> --csv [--delimiter Z] [--passthrough]  < ein.csv > aus.csv
+
+Die Datei ist der XML-Pseudocode des BMF oder eine YAML-Fassung davon;
+das Format wird am Inhalt erkannt.
 
 Einzelfall:
   --in NAME=WERT   Eingabevariable setzen (wiederholbar).
@@ -31,7 +34,8 @@ Stapelverarbeitung:
 
 Umwandlung:
   --yaml           den geladenen PAP als YAML ausgeben (lesbare Fassung des
-                   XML-Pseudocodes, etwa zum Vergleich zweier Jahrgänge)
+                   XML-Pseudocodes, etwa zum Vergleich zweier Jahrgänge).
+                   YAML-Dateien lassen sich unverändert wieder einlesen.
 
 Allgemein:
   --vars           Ein- und Ausgabevariablen mit Typ und Default auflisten
@@ -126,17 +130,18 @@ fn run(args: &[String]) -> Result<(), CliError> {
             }
             other => {
                 if path.replace(other).is_some() {
-                    return Err(CliError::Usage("mehr als eine XML-Datei angegeben".into()));
+                    return Err(CliError::Usage("mehr als eine PAP-Datei angegeben".into()));
                 }
             }
         }
         i += 1;
     }
 
-    let path = path.ok_or_else(|| CliError::Usage("keine XML-Datei angegeben".into()))?;
-    let xml = std::fs::read_to_string(path)
+    let path = path.ok_or_else(|| CliError::Usage("keine PAP-Datei angegeben".into()))?;
+    let source = std::fs::read_to_string(path)
         .map_err(|e| CliError::Usage(format!("`{path}` nicht lesbar: {e}")))?;
-    let pap = Pap::from_xml(&xml)?;
+    // Das Format wird am Inhalt erkannt: XML-Pseudocode oder YAML.
+    let pap = Pap::from_source(&source)?;
 
     if list_vars {
         print_vars(&pap);

@@ -292,15 +292,37 @@ strukturell — nötig, weil `a.add(b)` bewusst zu `a + b` vereinfacht wird und 
 AST sich dabei ändert. Zusätzlich wird geprüft, dass erneutes Ausgeben nichts
 mehr verändert.
 
-### Offen
+### Import (`src/load_yaml.rs`)
 
-Der **Import** fehlt noch: YAML einlesen und daraus einen `Pap` bauen. Die
-Ausdrücke sind bereits parsbar, es fehlt das Lesen der YAML-Struktur. Dafür
-braucht es eine YAML-Bibliothek, die den Rohtext von Zahlskalaren erhält —
-sonst läuft `932.30` durch einen `f64` und verliert die Nachkommastelle.
+Der Kreis ist geschlossen: YAML lässt sich laden und rechnen, das Format wird
+am Inhalt erkannt (`Pap::from_source`). Damit funktionieren alle Betriebsarten —
+Einzelfall, CSV-Stapel, erneuter YAML-Export — auch mit YAML-Dateien.
+
+**Bibliothekswahl:** Getestet wurde zuerst `saphyr`; es wandelt unquotierte
+Zahlen in `f64` um, wodurch `932.30` seine Nachkommastelle verlöre. `yaml-rust2`
+liefert stattdessen `Yaml::Real("932.30")`, also den unveränderten Quelltext —
+deshalb diese Crate. Zahlen werden ausschließlich aus ihrer Textform in
+`BigDecimal` überführt, nie über Fließkomma.
+
+`elif`-Ketten werden beim Lesen wieder zu verschachtelten Verzweigungen
+zusammengefügt; ein `elif` ohne vorangehendes `if` ist ein Fehler.
+
+### Verifikation des Imports
+
+`tests/yaml_roundtrip.rs` lädt beide Jahrgänge aus XML, gibt sie als YAML aus,
+lädt sie erneut und vergleicht **über 2 400 vollständige Berechnungen** (beide
+Jahrgänge, sechs Steuerklassen, Einkommen bis 250 000 €, Jahres- und
+Monatsberechnung). Alle Ausgabewerte müssen exakt übereinstimmen. Zusätzlich
+geprüft werden Deklarationen (Reihenfolge, Typ, Art, Default, Gruppe), die
+Stabilität eines zweiten Exports, die Erhaltung von Nachkommastellen sowie
+Fehlermeldungen. Ein handgeschriebener Beispiel-PAP belegt, dass sich das Format
+auch unabhängig vom XML nutzen lässt.
 
 ## Nächste sinnvolle Schritte
 
+- **Wasm-Paket**: Die Bibliothek kompiliert bereits unverändert für
+  `wasm32-unknown-unknown` (geprüft); es fehlt nur eine `wasm-bindgen`-Schicht.
+  Ergebnis wäre ein Lohnsteuerrechner im Browser ohne Server.
 - Ältere Jahrgänge (2024 und früher) laden und den Parser bei Bedarf erweitern.
 - Fälle jenseits des Grundtarifs prüfen: sonstige Bezüge (`SONSTB`), Versorgungsbezüge
   (`VBEZ`), private Krankenversicherung (`PKV`), Kinderfreibeträge (`ZKF`).

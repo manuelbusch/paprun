@@ -20,6 +20,7 @@ pub mod error;
 pub mod eval;
 pub mod lex;
 pub mod load;
+pub mod load_yaml;
 pub mod parse;
 pub mod value;
 
@@ -40,6 +41,25 @@ impl Pap {
     /// Lädt einen PAP aus dem XML-Pseudocode.
     pub fn from_xml(xml: &str) -> Result<Pap, Error> {
         load::load(xml)
+    }
+
+    /// Lädt einen PAP aus dem YAML-Format.
+    pub fn from_yaml(yaml: &str) -> Result<Pap, Error> {
+        load_yaml::load(yaml)
+    }
+
+    /// Lädt einen PAP und erkennt das Format am Inhalt: Beginnt die Datei
+    /// (nach Kommentaren und Leerzeilen) mit `<`, wird XML angenommen.
+    pub fn from_source(source: &str) -> Result<Pap, Error> {
+        let looks_like_xml = source
+            .trim_start_matches('\u{feff}')
+            .trim_start()
+            .starts_with('<');
+        if looks_like_xml {
+            Pap::from_xml(source)
+        } else {
+            Pap::from_yaml(source)
+        }
     }
 
     pub fn new_inputs(&self) -> InputBuilder<'_> {
