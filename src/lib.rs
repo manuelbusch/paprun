@@ -15,6 +15,7 @@
 
 pub mod ast;
 pub mod batch;
+pub mod emit;
 pub mod error;
 pub mod eval;
 pub mod lex;

@@ -46,6 +46,42 @@ Ausgegeben wird eine `NAME=WERT`-Zeile pro Ausgabevariable (u. a. `LSTLZZ` =
 Lohnsteuer für den Lohnzahlungszeitraum in Cent) — hier `LSTLZZ=692700`, also
 6 927,00 € Jahreslohnsteuer.
 
+## YAML-Ausgabe
+
+`--yaml` gibt den geladenen PAP in einer lesbaren YAML-Fassung aus:
+
+```
+paprun tests/data/Lohnsteuer2025.xml --yaml > Lohnsteuer2025.yaml
+```
+
+```yaml
+  UPTAB25:
+    - if: "X < GFB + ZAHL1"
+      then:
+        - eval: "ST = dec(0)"
+    - elif: "X < dec(17444)"
+      then:
+        - eval: "Y = div(X - GFB, ZAHL10000, 6, down)"
+        - eval: "RW = Y * dec(932.3)"
+        - eval: "ST = scale(RW * Y, 0, down)"
+```
+
+Die Ausdrücke behalten ihre exakte Bedeutung, werden aber kompakter notiert:
+Grundrechenarten als Operatoren, `div(a, b, stellen, modus)` für die gerundete
+Division, `scale(a, stellen, modus)` für `setScale`, `dec(x)` für einen
+Dezimalwert. Verschachtelte `ELSE`-Zweige werden zu `elif` gefaltet, damit der
+Tarifteil nicht zwanzig Ebenen tief einrückt.
+
+Damit lassen sich zwei Jahrgänge vergleichen — die Tarifänderung wird als
+gewöhnlicher Diff sichtbar:
+
+```
+diff <(paprun Lohnsteuer2025.xml --yaml) <(paprun Lohnsteuer2026.xml --yaml)
+```
+
+Ein Test stellt sicher, dass **jeder** Ausdruck beider Jahrgänge nach dem
+Wiedereinlesen identisch rechnet — auch mit denselben Fehlern.
+
 ## Stapelverarbeitung (CSV über Standardein-/ausgabe)
 
 Für viele Fälle liest `--csv` eine CSV-Tabelle von der Standardeingabe und

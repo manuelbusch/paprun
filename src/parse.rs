@@ -281,10 +281,77 @@ impl<'a> Parser<'a> {
                 if (name == "BigDecimal" || name == "RoundingMode") && self.peek_punct(".") {
                     return self.static_member(&name);
                 }
-                Ok(Expr::Var(self.resolve(&name)?))
+                // Kompaktschreibweise des YAML-Formats: `div(a, b, 2, down)`
+                // und `scale(a, 0, down)`.
+                if self.peek_punct("(") {
+                    if let Some(method) = compact_function(&name) {
+                        return self.compact_call(&name, method);
+                    }
+                    // `dec(x)` = BigDecimal.valueOf(x) (Dezimaldarstellung),
+                    // `bigdec(x)` = new BigDecimal(x) (bei double exakt binär).
+                    if name == "dec" || name == "bigdec" {
+                        // `dec(1015.13)` mit reinem Zahlliteral wird direkt zum
+                        // Dezimalwert — ohne Umweg über `double`, der
+                        // Nachkommastellen verfälschen könnte.
+                        if name == "dec"
+                            && let Some(literal) = self.decimal_literal_argument()?
+                        {
+                            return Ok(Expr::DecLit(literal));
+                        }
+                        let args = self.call_args()?;
+                        return match <[Expr; 1]>::try_from(args) {
+                            Ok([arg]) if name == "dec" => Ok(Expr::ValueOf(Box::new(arg))),
+                            Ok([arg]) => Ok(Expr::NewBigDecimal(Box::new(arg))),
+                            Err(args) => Err(self.err(format!(
+                                "`{name}` erwartet genau ein Argument, erhielt {}",
+                                args.len()
+                            ))),
+                        };
+                    }
+                }
+                if let Some(id) = self.scope.lookup(&name) {
+                    return Ok(Expr::Var(id));
+                }
+                // Rundungsmodi dürfen auch ohne Klassenpräfix stehen
+                // (`down` statt `BigDecimal.ROUND_DOWN`).
+                RoundMode::from_java_name(&name.to_uppercase())
+                    .map(Expr::RoundLit)
+                    .ok_or_else(|| self.err(format!("unbekannte Variable `{name}`")))
             }
             other => Err(self.err(format!("Ausdruck erwartet, gefunden {other:?}"))),
         }
+    }
+
+    /// Erkennt `(<Zahl>)` als vollständige Argumentliste und liefert den Wert
+    /// exakt aus dem Quelltext. Nur dann wird die Position vorgerückt.
+    fn decimal_literal_argument(&mut self) -> Result<Option<BigDecimal>, Error> {
+        let (Some(Tok::Punct("(")), Some(Tok::Num(text)), Some(Tok::Punct(")"))) = (
+            self.toks.get(self.pos),
+            self.toks.get(self.pos + 1),
+            self.toks.get(self.pos + 2),
+        ) else {
+            return Ok(None);
+        };
+        let value = text
+            .parse::<BigDecimal>()
+            .map_err(|e| self.err(format!("ungültige Dezimalzahl `{text}`: {e}")))?;
+        self.pos += 3;
+        Ok(Some(value))
+    }
+
+    /// `div(a, b, scale, modus)` bzw. `scale(a, stellen, modus)` — der erste
+    /// Parameter ist der Empfänger des entsprechenden Methodenaufrufs.
+    fn compact_call(&mut self, name: &str, method: BdMethod) -> Result<Expr, Error> {
+        let mut args = self.call_args()?;
+        if args.is_empty() {
+            return Err(self.err(format!("`{name}` erwartet mindestens ein Argument")));
+        }
+        let recv = args.remove(0);
+        Ok(Expr::Call {
+            recv: Box::new(recv),
+            method,
+            args,
+        })
     }
 
     /// `BigDecimal.ZERO`, `BigDecimal.ROUND_DOWN`, `BigDecimal.valueOf(x)`,
@@ -320,6 +387,21 @@ impl<'a> Parser<'a> {
             .map(Expr::RoundLit)
             .ok_or_else(|| self.err(format!("nicht unterstütztes Member `{class}.{member}`")))
     }
+}
+
+/// Funktionsschreibweisen des YAML-Formats auf die jeweilige Methode abbilden.
+/// Der erste Parameter ist jeweils der Empfänger.
+fn compact_function(name: &str) -> Option<BdMethod> {
+    Some(match name {
+        "div" => BdMethod::Divide,
+        "scale" => BdMethod::SetScale,
+        "cmp" => BdMethod::CompareTo,
+        "abs" => BdMethod::Abs,
+        "neg" => BdMethod::Negate,
+        "long" => BdMethod::LongValue,
+        "int" => BdMethod::IntValue,
+        _ => return None,
+    })
 }
 
 /// Java-Literalsemantik: mit Punkt ist es ein `double`-Literal, sonst `int`.

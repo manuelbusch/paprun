@@ -29,6 +29,10 @@ Stapelverarbeitung:
                    bleibt immer erhalten.
   --template       CSV-Kopfzeile mit allen Eingabevariablen ausgeben
 
+Umwandlung:
+  --yaml           den geladenen PAP als YAML ausgeben (lesbare Fassung des
+                   XML-Pseudocodes, etwa zum Vergleich zweier Jahrgänge)
+
 Allgemein:
   --vars           Ein- und Ausgabevariablen mit Typ und Default auflisten
   -h, --help       diese Hilfe";
@@ -76,6 +80,7 @@ fn run(args: &[String]) -> Result<(), CliError> {
     let mut all = false;
     let mut csv_mode = false;
     let mut template = false;
+    let mut yaml = false;
     let mut csv_options = CsvOptions::default();
 
     let mut i = 0;
@@ -86,6 +91,7 @@ fn run(args: &[String]) -> Result<(), CliError> {
             "--all" => all = true,
             "--csv" => csv_mode = true,
             "--template" => template = true,
+            "--yaml" => yaml = true,
             "--passthrough" => csv_options.passthrough = true,
             "--threads" => {
                 i += 1;
@@ -134,6 +140,11 @@ fn run(args: &[String]) -> Result<(), CliError> {
 
     if list_vars {
         print_vars(&pap);
+        return Ok(());
+    }
+
+    if yaml {
+        print!("{}", paprun::emit::to_yaml(&pap));
         return Ok(());
     }
 

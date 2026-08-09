@@ -241,6 +241,64 @@ allerdings billigere Schritte: das Einlesen in einen eigenen Thread verlagern
 (Lesen, Rechnen und Schreiben überlappen) oder die Ausgabe direkt aus den
 Threads puffern.
 
+## YAML-Format
+
+`--yaml` gibt einen geladenen PAP als YAML aus (`src/emit.rs`). Zweck: eine
+lesbare Fassung des XML-Pseudocodes, mit der sich Jahrgänge vergleichen lassen,
+und zugleich die Formatdefinition für einen späteren Import.
+
+### Ausdruckssyntax
+
+Der ursprüngliche Entwurf sah ein Suffix `a / b scale 2 down` vor. Das wurde
+verworfen, weil es mehrdeutig ist: Bei `a / b scale 2 down` wäre unklar, ob
+`a.divide(b, 2, DOWN)` gemeint ist (Quotient auf zwei Stellen gerundet) oder
+`(a.divide(b)).setScale(2, DOWN)` (exakte Division, danach gerundet) — zwei
+verschiedene Operationen, die zweite kann sogar fehlschlagen. Stattdessen jetzt
+Funktionsschreibweise mit dem Empfänger als erstem Argument:
+
+| XML | YAML |
+|---|---|
+| `a.add(b)`, `.subtract`, `.multiply` | `a + b`, `a - b`, `a * b` |
+| `a.divide(b)` | `a / b` (exakt, wie in Java) |
+| `a.divide(b, 6, BigDecimal.ROUND_DOWN)` | `div(a, b, 6, down)` |
+| `a.setScale(0, BigDecimal.ROUND_DOWN)` | `scale(a, 0, down)` |
+| `a.compareTo(b) == -1` | `a < b` |
+| `BigDecimal.valueOf(x)` | `dec(x)` |
+| `new BigDecimal(x)` | `bigdec(x)` |
+
+Der Parser versteht beide Schreibweisen, sodass XML-PAPs unverändert weiter
+funktionieren. Ergänzt wurden außerdem Arithmetik und Vergleiche direkt auf
+`BigDecimal` — nötig, damit sich PAPs von Hand schreiben lassen, ohne für jede
+Addition einen Methodenaufruf zu notieren.
+
+### Zwei Fallstricke, die Tests aufgedeckt haben
+
+1. **`dec(...)` ist nicht optional.** Ein nacktes `0.006` läse sich als
+   `double` zurück statt als `BigDecimal` und würde die Rechnung verändern. Der
+   Round-Trip-Test hat das sofort gefunden. Innerhalb von `dec(...)` wird ein
+   reines Zahlliteral direkt als Dezimalwert übernommen — ohne Umweg über
+   `f64`, der Nachkommastellen verfälschen könnte.
+2. **YAML deutet Skalare um.** Alle Werte werden deshalb zitiert; Schlüssel nur
+   dann, wenn YAML sie sonst umdeuten würde (`NO` → `false` in YAML 1.1) oder
+   sie wie eine Zahl aussehen.
+
+### Verifikation
+
+`tests/yaml_export.rs` gibt **jeden** Ausdruck beider Jahrgänge aus, liest ihn
+wieder ein und wertet Original und Rückübersetzung mit identischer
+Variablenbelegung aus (drei Belegungen je Ausdruck). Die Ergebnisse müssen exakt
+übereinstimmen, auch im Fehlerfall. Das prüft die Übersetzung semantisch statt
+strukturell — nötig, weil `a.add(b)` bewusst zu `a + b` vereinfacht wird und der
+AST sich dabei ändert. Zusätzlich wird geprüft, dass erneutes Ausgeben nichts
+mehr verändert.
+
+### Offen
+
+Der **Import** fehlt noch: YAML einlesen und daraus einen `Pap` bauen. Die
+Ausdrücke sind bereits parsbar, es fehlt das Lesen der YAML-Struktur. Dafür
+braucht es eine YAML-Bibliothek, die den Rohtext von Zahlskalaren erhält —
+sonst läuft `932.30` durch einen `f64` und verliert die Nachkommastelle.
+
 ## Nächste sinnvolle Schritte
 
 - Ältere Jahrgänge (2024 und früher) laden und den Parser bei Bedarf erweitern.

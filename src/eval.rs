@@ -111,6 +111,31 @@ fn eval_bin(op: BinOp, lhs: &Expr, rhs: &Expr, slots: &[Value]) -> Result<Value,
         return Ok(Value::Bool(if op == BinOp::Eq { a == b } else { a != b }));
     }
 
+    // Ist ein Operand BigDecimal, wird exakt gerechnet; `int` wird dazu
+    // hochgestuft. Das XML-Format nutzt dafür Methodenaufrufe, im
+    // YAML-Format lassen sich Operatoren direkt schreiben.
+    if matches!((&l, &r), (Value::Dec(_), _) | (_, Value::Dec(_))) {
+        let (a, b) = (as_dec_promoted(&l, op)?, as_dec_promoted(&r, op)?);
+        return Ok(match op {
+            BinOp::Add => Value::Dec(a + b),
+            BinOp::Sub => Value::Dec(a - b),
+            BinOp::Mul => Value::Dec(a * b),
+            // Ohne Rundungsangabe gilt Javas exakte Division; `div(a, b, n, modus)`
+            // ist die gerundete Variante.
+            BinOp::Div => Value::Dec(div_exact(&a, &b)?),
+            BinOp::Rem => {
+                return Err(Error::eval("Modulo ist für BigDecimal nicht definiert"));
+            }
+            BinOp::Eq => Value::Bool(a == b),
+            BinOp::Ne => Value::Bool(a != b),
+            BinOp::Lt => Value::Bool(a < b),
+            BinOp::Le => Value::Bool(a <= b),
+            BinOp::Gt => Value::Bool(a > b),
+            BinOp::Ge => Value::Bool(a >= b),
+            BinOp::And | BinOp::Or => unreachable!("oben behandelt"),
+        });
+    }
+
     // Java-Promotion: sobald ein Operand `double` ist, wird in `double` gerechnet.
     let both_int = matches!((&l, &r), (Value::Int(_), Value::Int(_)));
     if both_int {
@@ -266,6 +291,19 @@ fn as_f64(v: &Value, op: BinOp) -> Result<f64, Error> {
         Value::Dbl(f) => Ok(*f),
         other => Err(Error::eval(format!(
             "Operator {op:?} ist für {} nicht definiert",
+            other.type_name()
+        ))),
+    }
+}
+
+/// Operand einer gemischten Rechnung als `BigDecimal`; `int` wird hochgestuft,
+/// `double` bleibt ein Fehler, weil die Umwandlung mehrdeutig wäre.
+fn as_dec_promoted(v: &Value, op: BinOp) -> Result<BigDecimal, Error> {
+    match v {
+        Value::Dec(d) => Ok(d.clone()),
+        Value::Int(i) => Ok(BigDecimal::from(*i)),
+        other => Err(Error::eval(format!(
+            "Operator {op:?}: {} lässt sich nicht mit BigDecimal verrechnen",
             other.type_name()
         ))),
     }
