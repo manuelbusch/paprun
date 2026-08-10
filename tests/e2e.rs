@@ -332,6 +332,278 @@ fn known_values_stay_stable() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Solidaritätszuschlag, Kirchensteuer und Sonderfälle
+// ---------------------------------------------------------------------------
+
+/// Solidaritätszuschlag auf eine Jahresbemessungsgrundlage — unabhängig vom
+/// Interpreter aus § 4 SolzG nachgebildet: unterhalb der Freigrenze null,
+/// darüber 5,5 %, in der Milderungszone gedeckelt auf 11,9 % des
+/// übersteigenden Betrags.
+fn solidarity_surcharge(jbmg: &BigDecimal, freigrenze: i64, kztab: i64) -> BigDecimal {
+    let freigrenze = BigDecimal::from(freigrenze * kztab);
+    if *jbmg <= freigrenze {
+        return BigDecimal::from(0);
+    }
+    let voll = trunc(&(jbmg * dec("5.5") / BigDecimal::from(100)), 2);
+    let milderung = trunc(
+        &((jbmg - &freigrenze) * dec("11.9") / BigDecimal::from(100)),
+        2,
+    );
+    let jahresbetrag = if milderung < voll { milderung } else { voll };
+    // Ausgabe erfolgt in Cent.
+    trunc(&(jahresbetrag * BigDecimal::from(100)), 0)
+}
+
+/// Freigrenze des Solidaritätszuschlags je Jahrgang (§ 3 SolzG).
+fn surcharge_threshold(year: u16) -> i64 {
+    match year {
+        2025 => 19_950,
+        2026 => 20_350,
+        other => panic!("keine Freigrenze für {other} hinterlegt"),
+    }
+}
+
+#[test]
+fn surcharge_matches_independent_reference() {
+    let mut checked = 0;
+    let mut above_zero = 0;
+    for year in [2025u16, 2026] {
+        for stkl in [1, 3, 5] {
+            for euro in (40_000..=250_000).step_by(2_500) {
+                let vars = run(year, stkl, euro * 100, &[]);
+                let jbmg = value_of(&vars, "JBMG");
+                let kztab = value_of(&vars, "KZTAB");
+                let expected = solidarity_surcharge(
+                    &jbmg,
+                    surcharge_threshold(year),
+                    kztab.to_string().parse().expect("KZTAB ist ganzzahlig"),
+                );
+                assert_eq!(
+                    value_of(&vars, "SOLZLZZ"),
+                    expected,
+                    "{year}, StKl {stkl}, RE4={euro} EUR: JBMG={jbmg}, KZTAB={kztab}"
+                );
+                if expected > BigDecimal::from(0) {
+                    above_zero += 1;
+                }
+                checked += 1;
+            }
+        }
+    }
+    assert!(checked > 400, "zu wenige Fälle: {checked}");
+    // Der Test wäre wertlos, wenn er nur Nullwerte verglichen hätte.
+    assert!(
+        above_zero > 100,
+        "zu wenige Fälle mit tatsächlichem Zuschlag: {above_zero}"
+    );
+}
+
+#[test]
+fn surcharge_covers_all_three_zones() {
+    // Unterhalb der Freigrenze, in der Milderungszone und beim vollen Satz.
+    let unter = run(2025, 1, 9_000_000, &[]);
+    assert_eq!(value_of(&unter, "SOLZLZZ"), BigDecimal::from(0));
+
+    let milderung = run(2025, 1, 11_000_000, &[]);
+    let jbmg = value_of(&milderung, "JBMG");
+    let voll = trunc(&(&jbmg * dec("5.5") / BigDecimal::from(100)), 2) * BigDecimal::from(100);
+    let tatsaechlich = value_of(&milderung, "SOLZLZZ");
+    assert!(
+        tatsaechlich > BigDecimal::from(0),
+        "Zuschlag sollte anfallen"
+    );
+    assert!(
+        tatsaechlich < voll,
+        "in der Milderungszone muss der Zuschlag unter 5,5 % liegen: {tatsaechlich} vs {voll}"
+    );
+
+    let hoch = run(2025, 1, 20_000_000, &[]);
+    let jbmg = value_of(&hoch, "JBMG");
+    let voll = trunc(&(&jbmg * dec("5.5") / BigDecimal::from(100)), 2) * BigDecimal::from(100);
+    assert_eq!(
+        value_of(&hoch, "SOLZLZZ"),
+        voll,
+        "oberhalb der Milderungszone gilt der volle Satz"
+    );
+}
+
+#[test]
+fn church_tax_base_follows_the_annual_assessment() {
+    for year in [2025u16, 2026] {
+        for euro in [30_000i64, 60_000, 120_000] {
+            let ohne = run(year, 1, euro * 100, &[]);
+            assert_eq!(
+                value_of(&ohne, "BK"),
+                BigDecimal::from(0),
+                "{year}: ohne Kirchensteuerpflicht (R=0) bleibt BK null"
+            );
+
+            let mit = run(year, 1, euro * 100, &[("R", "1")]);
+            // BK ist die Jahresbemessungsgrundlage in Cent.
+            assert_eq!(
+                value_of(&mit, "BK"),
+                value_of(&mit, "JBMG") * BigDecimal::from(100),
+                "{year}, {euro} EUR: BK muss JBMG entsprechen"
+            );
+        }
+    }
+}
+
+#[test]
+fn child_allowances_reduce_surcharge_but_not_wage_tax() {
+    // Kinderfreibeträge mindern die Bemessungsgrundlage für Solidaritäts-
+    // zuschlag und Kirchensteuer, nicht aber die Lohnsteuer selbst.
+    let ohne = run(2025, 1, 12_000_000, &[]);
+    let mit = run(2025, 1, 12_000_000, &[("ZKF", "1.0")]);
+
+    assert_eq!(
+        value_of(&mit, "LSTLZZ"),
+        value_of(&ohne, "LSTLZZ"),
+        "Kinderfreibeträge dürfen die Lohnsteuer nicht verändern"
+    );
+    assert!(
+        value_of(&mit, "SOLZLZZ") < value_of(&ohne, "SOLZLZZ"),
+        "Kinderfreibeträge müssen den Solidaritätszuschlag mindern"
+    );
+    assert!(
+        value_of(&mit, "JBMG") < value_of(&ohne, "JBMG"),
+        "Kinderfreibeträge müssen die Bemessungsgrundlage mindern"
+    );
+}
+
+#[test]
+fn one_off_payments_are_taxed_separately() {
+    // Sonstige Bezüge (Einmalzahlungen) werden getrennt ausgewiesen.
+    let ohne = run(2025, 1, 5_000_000, &[]);
+    assert_eq!(value_of(&ohne, "STS"), BigDecimal::from(0));
+
+    // Sonstige Bezüge setzen den voraussichtlichen Jahresarbeitslohn voraus;
+    // ohne `JRE4` bleibt die Berechnung wirkungslos.
+    let einmalzahlung = 1_000_000i64;
+    let mit = run(
+        2025,
+        1,
+        5_000_000,
+        &[("JRE4", "5000000"), ("SONSTB", &einmalzahlung.to_string())],
+    );
+    let sts = value_of(&mit, "STS");
+    assert!(
+        sts > BigDecimal::from(0),
+        "auf 10.000 EUR Einmalzahlung fällt Steuer an"
+    );
+    assert_eq!(
+        value_of(&mit, "LSTLZZ"),
+        value_of(&ohne, "LSTLZZ"),
+        "der laufende Arbeitslohn bleibt unberührt"
+    );
+    // Die Steuer auf den sonstigen Bezug liegt zwischen Eingangs- und Spitzensatz.
+    assert!(
+        sts > BigDecimal::from(einmalzahlung) * dec("0.10")
+            && sts < BigDecimal::from(einmalzahlung) * dec("0.45"),
+        "Steuer auf den Einmalbezug unplausibel: {sts}"
+    );
+    // Der Zuschlag auf den Einmalbezug hat eine eigene Freigrenze: Erst bei
+    // entsprechend hohem Jahreslohn fällt er an, dann mit vollen 5,5 %.
+    assert_eq!(
+        value_of(&mit, "SOLZS"),
+        BigDecimal::from(0),
+        "bei 50.000 EUR Jahreslohn bleibt der Zuschlag unter der Freigrenze"
+    );
+    let hoch = run(
+        2025,
+        1,
+        11_000_000,
+        &[("JRE4", "11000000"), ("SONSTB", &einmalzahlung.to_string())],
+    );
+    let sts_hoch = value_of(&hoch, "STS");
+    assert_eq!(
+        value_of(&hoch, "SOLZS"),
+        trunc(&(&sts_hoch * dec("5.5") / BigDecimal::from(100)), 0),
+        "oberhalb der Freigrenze gelten volle 5,5 %"
+    );
+}
+
+#[test]
+fn pension_payments_grant_an_allowance() {
+    // Versorgungsbezüge sind über Freibeträge begünstigt: Bei gleichem
+    // Bruttolohn fällt weniger Steuer an, wenn ein Teil Versorgungsbezug ist.
+    let normal = run(2025, 1, 5_000_000, &[]);
+    let versorgung = run(
+        2025,
+        1,
+        5_000_000,
+        &[
+            ("VBEZ", "2000000"),
+            ("JVBEZ", "2000000"),
+            ("VJAHR", "2020"),
+            ("LZZ", "1"),
+        ],
+    );
+    assert!(
+        value_of(&versorgung, "LSTLZZ") < value_of(&normal, "LSTLZZ"),
+        "Versorgungsbezüge müssen die Steuer mindern"
+    );
+    // `VFRB` weist die bei der Berechnung berücksichtigten Freibeträge aus.
+    // Sie fallen auch ohne Versorgungsbezug an (Arbeitnehmer-Pauschbetrag),
+    // steigen aber, sobald Versorgungsbezüge hinzukommen.
+    assert!(
+        value_of(&versorgung, "VFRB") > value_of(&normal, "VFRB"),
+        "Versorgungsbezüge müssen die berücksichtigten Freibeträge erhöhen"
+    );
+}
+
+#[test]
+fn private_health_insurance_is_recognised() {
+    // Bei privater Versicherung (PKV=2) tritt der gemeldete Beitrag an die
+    // Stelle der pauschalen Vorsorge.
+    let gesetzlich = run(2025, 1, 6_000_000, &[]);
+    let privat = run(2025, 1, 6_000_000, &[("PKV", "2"), ("PKPV", "600000")]);
+    assert_ne!(
+        value_of(&privat, "LSTLZZ"),
+        value_of(&gesetzlich, "LSTLZZ"),
+        "die private Versicherung muss sich auswirken"
+    );
+    assert!(
+        value_of(&privat, "VKVLZZ") > BigDecimal::from(0),
+        "der berücksichtigte Beitrag muss ausgewiesen werden"
+    );
+}
+
+/// Regressionsschutz für Sonderfälle. Die Werte stammen aus Läufen dieses
+/// Interpreters; unabhängig nachgerechnet sind Grundtarif (oben) und
+/// Solidaritätszuschlag.
+#[test]
+fn special_cases_stay_stable() {
+    let cases: [(&str, &[(&str, &str)], &str, &str); 5] = [
+        ("Kirchensteuerpflicht", &[("R", "1")], "BK", "2802400"),
+        // Zwei Kinderfreibeträge drücken die Bemessungsgrundlage von 28.024 EUR
+        // auf 19.960 EUR — knapp über die Freigrenze, also in die Milderungszone.
+        ("Kinderfreibetrag", &[("ZKF", "2.0")], "JBMG", "19960"),
+        ("Kinderfreibetrag", &[("ZKF", "2.0")], "SOLZLZZ", "119"),
+        (
+            "Einmalzahlung",
+            &[("JRE4", "11000000"), ("SONSTB", "1000000")],
+            "STS",
+            "420000",
+        ),
+        (
+            "Kirchensteuer auf Einmalbezug",
+            &[("JRE4", "11000000"), ("SONSTB", "1000000"), ("R", "1")],
+            "BKS",
+            "420000",
+        ),
+    ];
+    for (label, extra, variable, expected) in cases {
+        let vars = run(2025, 1, 11_000_000, extra);
+        assert_eq!(
+            value_of(&vars, variable),
+            dec(expected),
+            "{label}: {variable}"
+        );
+    }
+}
+
 #[test]
 fn rejects_invalid_inputs() {
     let pap = pap(2025);

@@ -324,7 +324,4 @@ auch unabhängig vom XML nutzen lässt.
   `wasm32-unknown-unknown` (geprüft); es fehlt nur eine `wasm-bindgen`-Schicht.
   Ergebnis wäre ein Lohnsteuerrechner im Browser ohne Server.
 - Ältere Jahrgänge (2024 und früher) laden und den Parser bei Bedarf erweitern.
-- Fälle jenseits des Grundtarifs prüfen: sonstige Bezüge (`SONSTB`), Versorgungsbezüge
-  (`VBEZ`), private Krankenversicherung (`PKV`), Kinderfreibeträge (`ZKF`).
-- Solidaritätszuschlag und Kirchensteuer-Bemessungsgrundlage gezielt testen (die
-  bisherigen Testfälle liegen unter der SolZ-Freigrenze, `SOLZLZZ` ist dort immer 0).
+- Ergebnisse gegen den BMF-Online-Rechner stichprobenartig gegenprüfen.
