@@ -575,7 +575,10 @@ fn private_health_insurance_is_recognised() {
 /// Solidaritätszuschlag.
 #[test]
 fn special_cases_stay_stable() {
-    let cases: [(&str, &[(&str, &str)], &str, &str); 5] = [
+    /// Beschreibung, zusätzliche Eingaben, geprüfte Variable, erwarteter Wert.
+    type Fall<'a> = (&'a str, &'a [(&'a str, &'a str)], &'a str, &'a str);
+
+    let cases: [Fall; 5] = [
         ("Kirchensteuerpflicht", &[("R", "1")], "BK", "2802400"),
         // Zwei Kinderfreibeträge drücken die Bemessungsgrundlage von 28.024 EUR
         // auf 19.960 EUR — knapp über die Freigrenze, also in die Milderungszone.
@@ -614,4 +617,58 @@ fn rejects_invalid_inputs() {
         "OUTPUT darf nicht gesetzt werden"
     );
     assert!(inputs.set("STKL", "eins").is_err());
+}
+
+// ---------------------------------------------------------------------------
+// Schnittstelle der WebAssembly-Anbindung
+// ---------------------------------------------------------------------------
+// Die Wasm-Hülle in `src/wasm.rs` besteht nur aus Delegationen auf diese
+// Funktionen; hier sind sie plattformunabhängig geprüft.
+
+#[test]
+fn variable_listings_are_valid_json() {
+    for year in [2025u16, 2026] {
+        for json in [
+            pap(year).input_variables_json(),
+            pap(year).output_variables_json(),
+        ] {
+            assert!(
+                json.starts_with('[') && json.ends_with(']'),
+                "{year}: {json}"
+            );
+            // Jeder Eintrag trägt Name und Typ.
+            assert!(json.contains("\"name\":"), "{year}: Name fehlt");
+            assert!(json.contains("\"type\":"), "{year}: Typ fehlt");
+            // Anführungszeichen müssen paarweise auftreten — grobe, aber
+            // wirksame Prüfung gegen fehlende Maskierung.
+            assert_eq!(
+                json.matches('"').count() % 2,
+                0,
+                "{year}: unpaarige Anführungszeichen"
+            );
+        }
+
+        let inputs = pap(year).input_variables_json();
+        assert!(inputs.contains(r#"{"name":"RE4","type":"BigDecimal","default":"0"}"#));
+        let outputs = pap(year).output_variables_json();
+        assert!(outputs.contains(r#""name":"LSTLZZ""#));
+        assert!(outputs.contains(r#""group":"STANDARD""#));
+    }
+}
+
+#[test]
+fn result_json_keeps_values_as_strings() {
+    // JavaScripts `Number` würde Nachkommastellen verlieren; deshalb bleiben
+    // alle Werte Zeichenketten.
+    let pap = pap(2025);
+    let mut inputs = pap.new_inputs();
+    inputs.set("LZZ", "1").unwrap();
+    inputs.set("STKL", "1").unwrap();
+    inputs.set("RE4", "5000000").unwrap();
+    let json = paprun::json::object(&pap.run(&inputs).unwrap());
+
+    assert!(json.starts_with('{') && json.ends_with('}'));
+    assert!(json.contains(r#""LSTLZZ":"722000""#), "unerwartet: {json}");
+    // Keine nackten Zahlen im Objekt.
+    assert!(!json.contains(":7"), "Werte müssen zitiert sein: {json}");
 }

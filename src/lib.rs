@@ -18,11 +18,15 @@ pub mod batch;
 pub mod emit;
 pub mod error;
 pub mod eval;
+pub mod json;
 pub mod lex;
 pub mod load;
 pub mod load_yaml;
 pub mod parse;
 pub mod value;
+
+#[cfg(target_arch = "wasm32")]
+pub mod wasm;
 
 use ast::{Ty, VarId, VarKind};
 use bigdecimal::BigDecimal;
@@ -88,6 +92,40 @@ impl Pap {
             .zip(&env.slots)
             .map(|(decl, value)| (decl.name.clone(), format_value(value)))
             .collect())
+    }
+}
+
+impl Pap {
+    /// Eingabevariablen als JSON-Array `[{name, type, default}, …]`.
+    pub fn input_variables_json(&self) -> String {
+        let entries: Vec<String> = self
+            .vars_of_kind(VarKind::Input)
+            .map(|(_, decl)| {
+                format!(
+                    "{{\"name\":{},\"type\":{},\"default\":{}}}",
+                    json::string(&decl.name),
+                    json::string(decl.ty.name()),
+                    json::string(&format_value(&decl.default))
+                )
+            })
+            .collect();
+        json::array(&entries)
+    }
+
+    /// Ausgabevariablen als JSON-Array `[{name, type, group}, …]`.
+    pub fn output_variables_json(&self) -> String {
+        let entries: Vec<String> = self
+            .vars_of_kind(VarKind::Output)
+            .map(|(_, decl)| {
+                format!(
+                    "{{\"name\":{},\"type\":{},\"group\":{}}}",
+                    json::string(&decl.name),
+                    json::string(decl.ty.name()),
+                    json::string(&decl.group)
+                )
+            })
+            .collect();
+        json::array(&entries)
     }
 }
 

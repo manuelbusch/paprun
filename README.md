@@ -147,6 +147,32 @@ Durchsatz (200 000 Zeilen, 6 Kerne):
 | 4 | 131 000 | 1,53 s |
 | 6 | **159 500** | **1,25 s** |
 
+## Im Browser (WebAssembly)
+
+Die Bibliothek läuft unverändert als WebAssembly — damit wird der amtliche
+Programmablaufplan zu einem Rechner, der ohne Server auskommt und dessen
+Eingaben das Gerät nicht verlassen.
+
+```
+./web/build.sh                                  # baut web/pkg
+python3 -m http.server --directory web 8000     # http://localhost:8000/
+```
+
+```js
+import init, { Pap } from "./pkg/paprun.js";
+await init();
+const pap = new Pap(await (await fetch("Lohnsteuer2026.xml")).text());
+const ergebnis = JSON.parse(pap.run(["LZZ", "STKL", "RE4"], ["1", "1", "5000000"]));
+ergebnis.LSTLZZ;   // "681900" — Cent
+```
+
+Alle Werte sind Zeichenketten: Über JavaScripts `Number` würden Nachkommastellen
+verloren gehen. `web/index.html` enthält eine vollständige Demo-Oberfläche.
+
+Voraussetzungen für den Build sind das Ziel `wasm32-unknown-unknown`
+(`rustup target add wasm32-unknown-unknown`) und `wasm-bindgen-cli` in
+passender Version zur Crate (`cargo install wasm-bindgen-cli --version 0.2.127`).
+
 ## Laufzeit
 
 Eine Berechnung dauert rund 19 µs (≈ 51 000/s auf einem Kern), das Laden eines PAP

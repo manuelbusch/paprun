@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>paprun — Lohnsteuer im Browser</title>
+<style>
+  :root { color-scheme: light dark; --rand: #8884; }
+  body { font-family: system-ui, sans-serif; max-width: 46rem; margin: 2rem auto;
+         padding: 0 1rem; line-height: 1.5; }
+  h1 { font-size: 1.4rem; margin-bottom: .2rem; }
+  p.hinweis { color: #888; margin-top: 0; }
+  form { display: grid; grid-template-columns: auto 1fr; gap: .6rem 1rem;
+         align-items: center; margin: 1.5rem 0; }
+  label { text-align: right; }
+  input, select { padding: .4rem; border: 1px solid var(--rand); border-radius: .3rem;
+                  font: inherit; width: 100%; box-sizing: border-box; }
+  button { grid-column: 2; justify-self: start; padding: .5rem 1.2rem; font: inherit;
+           border: 1px solid var(--rand); border-radius: .3rem; cursor: pointer; }
+  table { border-collapse: collapse; width: 100%; }
+  td, th { text-align: left; padding: .35rem .6rem; border-bottom: 1px solid var(--rand); }
+  td.betrag { text-align: right; font-variant-numeric: tabular-nums; }
+  .fehler { color: #c00; }
+  footer { margin-top: 2rem; color: #888; font-size: .9rem; }
+</style>
+</head>
+<body>
+<h1>Lohnsteuer nach amtlichem Programmablaufplan</h1>
+<p class="hinweis">Rechnet vollständig im Browser — die Eingaben verlassen das Gerät nicht.</p>
+
+<div id="status">Lade Programmablaufplan …</div>
+
+<form id="eingabe" hidden>
+  <label for="jahr">Jahr</label>
+  <select id="jahr">
+    <option value="2025">2025</option>
+    <option value="2026" selected>2026</option>
+  </select>
+
+  <label for="brutto">Bruttolohn (€)</label>
+  <input id="brutto" type="number" value="50000" min="0" step="100">
+
+  <label for="lzz">Zeitraum</label>
+  <select id="lzz">
+    <option value="1" selected>Jahr</option>
+    <option value="2">Monat</option>
+  </select>
+
+  <label for="stkl">Steuerklasse</label>
+  <select id="stkl">
+    <option>1</option><option>2</option><option>3</option>
+    <option>4</option><option>5</option><option>6</option>
+  </select>
+
+  <label for="kvz">Zusatzbeitrag KV (%)</label>
+  <input id="kvz" type="number" value="2.5" step="0.1" min="0">
+
+  <label for="kirche">Kirchensteuer</label>
+  <input id="kirche" type="checkbox">
+
+  <button type="submit">Berechnen</button>
+</form>
+
+<div id="ergebnis"></div>
+
+<footer>
+  Grundlage sind die vom BMF veröffentlichten Programmablaufpläne. Dieses
+  Werkzeug dient der technischen Auswertung und ist keine steuerliche Beratung.
+</footer>
+
+<script type="module">
+import init, { Pap } from "./pkg/paprun.js";
+
+const status = document.getElementById("status");
+const form = document.getElementById("eingabe");
+const ausgabe = document.getElementById("ergebnis");
+const plaene = new Map();
+
+const euro = (cent) => (Number(cent) / 100).toLocaleString("de-DE",
+  { style: "currency", currency: "EUR" });
+
+/** Lädt den Plan eines Jahres und hält ihn vor. */
+async function plan(jahr) {
+  if (!plaene.has(jahr)) {
+    const antwort = await fetch(`Lohnsteuer${jahr}.xml`);
+    if (!antwort.ok) throw new Error(`Lohnsteuer${jahr}.xml nicht gefunden`);
+    plaene.set(jahr, new Pap(await antwort.text()));
+  }
+  return plaene.get(jahr);
+}
+
+function berechnen() {
+  const jahr = document.getElementById("jahr").value;
+  const lzz = document.getElementById("lzz").value;
+  // Der Programmablaufplan erwartet Beträge in Cent.
+  const brutto = Math.round(Number(document.getElementById("brutto").value) * 100);
+
+  return plan(jahr).then((pap) => {
+    const namen = ["LZZ", "STKL", "RE4", "KVZ", "PVZ"];
+    const werte = [
+      lzz,
+      document.getElementById("stkl").value,
+      String(brutto),
+      document.getElementById("kvz").value,
+      "1",
+    ];
+    if (document.getElementById("kirche").checked) {
+      namen.push("R");
+      werte.push("1");
+    }
+    // Für den Jahreslauf ist der voraussichtliche Jahresarbeitslohn bekannt.
+    if (lzz === "1") {
+      namen.push("JRE4");
+      werte.push(String(brutto));
+    }
+    return JSON.parse(pap.run(namen, werte));
+  });
+}
+
+function anzeigen(ergebnis) {
+  const zeilen = [
+    ["Lohnsteuer", ergebnis.LSTLZZ],
+    ["Solidaritätszuschlag", ergebnis.SOLZLZZ],
+    ["Bemessungsgrundlage Kirchensteuer", ergebnis.BK],
+  ];
+  ausgabe.innerHTML = `<table><tbody>${zeilen
+    .map(([bezeichnung, cent]) =>
+      `<tr><th>${bezeichnung}</th><td class="betrag">${euro(cent)}</td></tr>`)
+    .join("")}</tbody></table>`;
+}
+
+form.addEventListener("submit", (ereignis) => {
+  ereignis.preventDefault();
+  berechnen()
+    .then(anzeigen)
+    .catch((fehler) => {
+      ausgabe.innerHTML = `<p class="fehler">${fehler.message}</p>`;
+    });
+});
+
+init()
+  .then(() => plan(document.getElementById("jahr").value))
+  .then((pap) => {
+    status.textContent = `${pap.name} geladen.`;
+    form.hidden = false;
+    return berechnen().then(anzeigen);
+  })
+  .catch((fehler) => {
+    status.innerHTML = `<span class="fehler">${fehler.message}</span>`;
+  });
+</script>
+</body>
+</html>

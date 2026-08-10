@@ -186,11 +186,7 @@ fn run(args: &[String]) -> Result<(), CliError> {
         pap.run(&inputs)?
     };
     if json {
-        let body: Vec<String> = outputs
-            .iter()
-            .map(|(name, value)| format!("  \"{name}\": \"{value}\""))
-            .collect();
-        println!("{{\n{}\n}}", body.join(",\n"));
+        println!("{}", paprun::json::object_pretty(&outputs));
     } else {
         for (name, value) in outputs {
             println!("{name}={value}");

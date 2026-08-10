@@ -318,10 +318,49 @@ Stabilität eines zweiten Exports, die Erhaltung von Nachkommastellen sowie
 Fehlermeldungen. Ein handgeschriebener Beispiel-PAP belegt, dass sich das Format
 auch unabhängig vom XML nutzen lässt.
 
+## WebAssembly (`src/wasm.rs`, `web/`)
+
+Die Bibliothek läuft unverändert als WebAssembly. `wasm-bindgen` ist
+**zielspezifisch** eingebunden:
+
+```toml
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+```
+
+Auf allen anderen Zielen ändert sich dadurch nichts — weder an den
+Abhängigkeiten noch an der Bauzeit. `src/wasm.rs` steht hinter
+`#[cfg(target_arch = "wasm32")]`.
+
+Die JS-Schnittstelle übergibt Eingaben als zwei gleich lange Listen (Namen,
+Werte) und liefert ein JSON-Objekt zurück. **Alle Werte sind Zeichenketten**:
+Über JavaScripts `Number` (ein `f64`) würden Nachkommastellen verloren gehen —
+derselbe Grund, aus dem der CSV- und der YAML-Pfad Zahlen als Text behandeln.
+
+Größe des Release-Builds: rund 590 KB `.wasm`.
+
+### Verifikation und ihre Grenze
+
+Geprüft ist: Beide Ziele bauen (nativ und `wasm32-unknown-unknown`), die
+erzeugte JS-Glue exportiert `class Pap`, und ein HTTP-Server liefert alle
+Dateien mit korrekten MIME-Typen aus — insbesondere `application/wasm`, ohne
+das `WebAssembly.instantiateStreaming` scheitern würde.
+
+Damit die Logik hinter den Bindings nicht ungetestet bleibt, wurde sie aus dem
+wasm-spezifischen Modul herausgezogen: Die JSON-Erzeugung liegt jetzt in
+`src/json.rs`, die Variablenlisten in `Pap::input_variables_json` bzw.
+`output_variables_json` — beides nativ getestet. `src/wasm.rs` besteht nur noch
+aus Delegationen. Nebeneffekt: Auch das CLI-Flag `--json` nutzt jetzt dieselbe,
+korrekt maskierende Ausgabe statt zusammengesetzter Zeichenketten.
+
+**Nicht geprüft:** Die Demo-Seite wurde nicht in einem Browser ausgeführt — auf
+diesem Rechner ist weder Node.js noch ein Chrome-Binary installiert (nur
+`chromedriver` ohne zugehörigen Browser). Ein Durchlauf im Browser steht daher
+noch aus.
+
 ## Nächste sinnvolle Schritte
 
-- **Wasm-Paket**: Die Bibliothek kompiliert bereits unverändert für
-  `wasm32-unknown-unknown` (geprüft); es fehlt nur eine `wasm-bindgen`-Schicht.
-  Ergebnis wäre ein Lohnsteuerrechner im Browser ohne Server.
 - Ältere Jahrgänge (2024 und früher) laden und den Parser bei Bedarf erweitern.
+- Die Browser-Demo tatsächlich im Browser durchlaufen (hier mangels Node.js und
+  Chrome nicht möglich gewesen).
 - Ergebnisse gegen den BMF-Online-Rechner stichprobenartig gegenprüfen.
