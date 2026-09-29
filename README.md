@@ -217,3 +217,7 @@ Details in [docs/PLAN.md](docs/PLAN.md).
 `paprun` ist ein technisches Werkzeug zur Auswertung der amtlichen
 Programmablaufpläne und keine steuerliche Beratung. Maßgeblich sind die
 Veröffentlichungen des BMF.
+
+## Lizenz
+
+`paprun` steht unter der MIT-Lizenz — siehe [LICENSE](LICENSE).
